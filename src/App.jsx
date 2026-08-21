@@ -18,7 +18,237 @@ installStorageShim();
 const C = {
   bg: "#000000",
   surface: "#0B0E11",
-  surface2: "#12161A",function Select(props) { return <select {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
+  surface2: "#12161A",
+  surface3: "#1A2024",
+  line: "#22292E",
+  text: "#EAF6F8",
+  textMuted: "#7C9095",
+  textFaint: "#4C5C60",
+  blue: "#2F86FF",
+  orange: "#FF8A3D",
+  lime: "#2DE0F0",
+  red: "#FF5C5C",
+  redDim: "#432525",
+  limeDim: "#0F343A",
+  yellow: "#FFD23D",
+};
+const GREEN = "#34D399";
+const PALETA_CORES = ["#2F86FF", "#34D399", "#FBBF24", "#FF5C5C", "#A78BFA", "#FF8A3D", "#2DE0F0", "#F472B6", "#84CC16", "#94A3B8"];
+
+const FONT_DISPLAY = "'Bebas Neue', 'Oswald', sans-serif";
+const FONT_BODY = "'Inter', -apple-system, sans-serif";
+
+const POSICOES = ["Goleiro", "Fixo", "Ala Direito", "Ala Esquerdo", "Pivô"];
+const TIPOS_TREINO = ["Técnico", "Tático", "Físico", "Técnico-tático", "Finalização", "Defesa", "Ataque", "Bola parada", "Goleiros", "Transição", "Jogo reduzido", "Coletivo", "Outro"];
+
+/* Ações de jogo — divididas por linha/goleiro para o modo rápido */
+const GOL_TIPOS = ["Gol", "Jogada Ensaiada", "Falha", "Gol Contra"];
+const ACOES_LINHA = [
+  { key: "positivo", label: "POSITIVO", icon: ThumbsUp, color: C.lime, variants: ["Passe importante", "Jogada individual"] },
+  { key: "erro", label: "ERRO", icon: X, color: C.red, variants: ["Simples", "Gerou gol adversário", "Gerou chance perigosa"] },
+  { key: "falta", label: "FALTA", icon: AlertCircle, color: C.yellow, variants: ["Cometida", "Sofrida"] },
+  { key: "cartao", label: "CARTÃO", emoji: "🟨", color: C.yellow, variants: ["Amarelo", "Vermelho"] },
+];
+const ACOES_GOLEIRO = [
+  { key: "defesa", label: "DEFESA", icon: Hand, color: C.blue },
+  { key: "erro", label: "ERRO", icon: X, color: C.red, variants: ["Simples", "Gerou gol adversário", "Gerou chance perigosa"] },
+  { key: "falta", label: "FALTA", icon: AlertCircle, color: C.yellow, variants: ["Cometida", "Sofrida"] },
+  { key: "cartao", label: "CARTÃO", emoji: "🟨", color: C.yellow, variants: ["Amarelo", "Vermelho"] },
+];
+
+const FINALIZACOES_TIME = [
+  { key: "Gol", color: C.lime },
+  { key: "Nova jogada", color: C.blue },
+  { key: "Defesa do goleiro", color: C.orange },
+  { key: "Trave", color: C.yellow },
+  { key: "Pra fora", color: C.red },
+];
+
+const BOLAS_PARADAS = [
+  { key: "saida_goleiro", label: "Saída de Goleiro", jogadas: ["Jogada 1", "Jogada 2", "Jogada 3", "Jogada 4"], outcomes: ["Certa", "Gerou gol a favor", "Errada", "Gerou gol adversário"] },
+  { key: "saida_meio", label: "Saída de Meio", jogadas: ["Aérea", "Corrida", "Roda"], outcomes: ["Certa", "Gerou gol a favor", "Errada", "Gerou gol adversário"] },
+  { key: "escanteio", label: "Escanteio / Lateral Ofensivo", jogadas: ["Cadeado 1", "Cadeado 2", "Jogada X", "Quadrado"], outcomes: ["Chance perigosa", "Gerou gol a favor", "Erro de jogada", "Gerou chance adversária"] },
+  { key: "falta", label: "Falta", jogadas: null, outcomes: ["Chance perigosa", "Gerou gol a favor", "Erro de jogada", "Gerou chance adversária"] },
+  { key: "penalti", label: "Pênalti", jogadas: null, outcomes: ["Gol", "Errou"] },
+];
+/* Categorias cuja atribuição de "quem fez o gol / quem deu assistência" é solicitada quando o resultado é gol/gerou gol a favor */
+const BOLA_PARADA_PEDE_ATRIBUICAO = ["saida_meio", "escanteio", "falta", "penalti"];
+
+const FORMATOS_PARTIDA = [
+  { id: "custom", label: "Personalizado", n: null, dur: null },
+  { id: "3x10", label: "3 tempos de 10 min", n: 3, dur: 10 },
+  { id: "2x20", label: "2 tempos de 20 min", n: 2, dur: 20 },
+];
+function gerarPeriodos(n, dur) {
+  const total = Math.max(1, Number(n) || 1);
+  const duracao = Number(dur) || 20;
+  return Array.from({ length: total }, (_, i) => ({
+    numero: i + 1,
+    duracaoMin: duracao,
+    label: total === 1 ? "Tempo único" : total === 2 ? (i === 0 ? "1º Tempo" : "2º Tempo") : `${i + 1}º Quarto`,
+  }));
+}
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+function resizeImageToDataURL(file, maxDim = 240) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Falha ao carregar imagem"));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round((height * maxDim) / width); width = maxDim; }
+        else if (height > maxDim) { width = Math.round((width * maxDim) / height); height = maxDim; }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function getSaudacao(nome) {
+  const h = new Date().getHours();
+  if (h < 12) return `Bom dia, ${nome} ☀️`;
+  if (h < 18) return `Boa tarde, ${nome} 🌤`;
+  return `Boa noite, ${nome} 🌙`;
+}
+const STORAGE_KEY = "futsal-data-v1";
+const BACKUP_PREFIX = "futsal-backup-";
+const MAX_BACKUPS = 8;
+
+async function listarBackups() {
+  try {
+    const res = await window.storage.list(BACKUP_PREFIX, false);
+    return (res?.keys || []).slice().sort().reverse();
+  } catch (e) { return []; }
+}
+async function criarBackup(data) {
+  const chave = BACKUP_PREFIX + new Date().toISOString().slice(0, 10) + "-" + Date.now();
+  try {
+    await window.storage.set(chave, JSON.stringify(data), false);
+    const chaves = await listarBackups();
+    const excedentes = chaves.slice(MAX_BACKUPS);
+    for (const k of excedentes) { try { await window.storage.delete(k, false); } catch (e) { /* ignora */ } }
+    return chave;
+  } catch (e) { return null; }
+}
+
+const emptyState = () => ({
+  escolas: [],
+  equipes: [],
+  categorias: [],
+  atletas: [],
+  eventos: [],
+  scouts: {},
+  premiacoes: [],
+});
+
+function novoScoutJogo(evento) {
+  const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
+  return {
+    placarCasa: 0,
+    placarVisitante: 0,
+    periodoAtual: periodos[0].numero,
+    eventosScout: [],
+    destaques: {},
+    pontosDestaque: "",
+    pontosMelhorar: "",
+    cronometro: { rodando: false, inicioEpoch: null, acumuladoPeriodoSeg: 0, acumuladoTotalSeg: 0 },
+    minutagem: {},
+    titularesDefinidos: false,
+  };
+}
+
+function tempoTotalAtual(cronometro) {
+  if (!cronometro) return 0;
+  return cronometro.acumuladoTotalSeg + (cronometro.rodando ? (Date.now() - cronometro.inicioEpoch) / 1000 : 0);
+}
+function tempoPeriodoAtual(cronometro) {
+  if (!cronometro) return 0;
+  return cronometro.acumuladoPeriodoSeg + (cronometro.rodando ? (Date.now() - cronometro.inicioEpoch) / 1000 : 0);
+}
+function formatMMSS(totalSeg) {
+  const s = Math.max(0, Math.floor(totalSeg || 0));
+  const m = Math.floor(s / 60), ss = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+function minutagemAtleta(scout, atletaId) {
+  const m = scout.minutagem?.[atletaId];
+  if (!m) return 0;
+  const totalAgora = tempoTotalAtual(scout.cronometro);
+  return m.segundosTotais + (m.entradaEmSeg != null ? totalAgora - m.entradaEmSeg : 0);
+}
+function calcularNotaSugerida(scout, atletaId) {
+  const evs = scout.eventosScout.filter((e) => e.atletaId === atletaId);
+  let nota = 6;
+  evs.forEach((e) => {
+    if (e.acao === "gol") nota += 0.6;
+    if (e.acao === "assistencia") nota += 0.4;
+    if (e.acao === "defesa") nota += 0.2;
+    if (e.acao === "erro") nota += e.variante === "Gerou gol adversário" ? -0.6 : -0.3;
+    if (e.acao === "cartao") nota += e.variante === "Vermelho" ? -0.4 : -0.2;
+  });
+  nota = Math.max(6, Math.min(10, nota));
+  return Math.round(nota * 2) / 2;
+}
+
+/* ============================================================
+   SMALL UI PRIMITIVES
+   ============================================================ */
+function CourtLine({ label }) {
+  return (
+    <div className="flex items-center gap-3 my-5">
+      <div className="flex-1 h-px" style={{ background: C.line }} />
+      {label && <span className="text-xs tracking-widest uppercase" style={{ color: C.textFaint, fontFamily: FONT_BODY }}>{label}</span>}
+      <div className="w-1.5 h-1.5 rounded-full" style={{ background: C.line }} />
+      <div className="flex-1 h-px" style={{ background: C.line }} />
+    </div>
+  );
+}
+
+function Btn({ children, onClick, variant = "default", className = "", style = {}, disabled }) {
+  const base = "px-4 py-2.5 rounded-lg font-semibold text-sm transition-transform active:scale-95 flex items-center justify-center gap-2 disabled:opacity-40 disabled:active:scale-100";
+  const variants = {
+    default: { background: C.surface3, color: C.text },
+    primary: { background: C.lime, color: "#12150F" },
+    outline: { background: "transparent", color: C.text, border: `1px solid ${C.line}` },
+    danger: { background: C.redDim, color: C.red },
+  };
+  return (
+    <button disabled={disabled} onClick={onClick} className={`${base} ${className}`} style={{ ...variants[variant], fontFamily: FONT_BODY, ...style }}>
+      {children}
+    </button>
+  );
+}
+
+function Card({ children, onClick, style = {}, className = "", accent }) {
+  return (
+    <div onClick={onClick} className={`rounded-xl p-4 ${onClick ? "cursor-pointer active:scale-[0.99]" : ""} transition-transform ${className}`} style={{ background: C.surface, border: `1px solid ${C.line}`, borderLeft: accent ? `3px solid ${accent}` : `1px solid ${C.line}`, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block mb-3">
+      <span className="block text-xs uppercase tracking-wide mb-1.5" style={{ color: C.textMuted, fontFamily: FONT_BODY }}>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const inputStyle = { background: C.surface2, color: C.text, border: `1px solid ${C.line}`, fontFamily: FONT_BODY };
+function Input(props) { return <input {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none focus:ring-1 ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
+function Select(props) { return <select {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
 function TextArea(props) { return <textarea {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
 
 function Modal({ title, onClose, children, wide }) {
@@ -395,6 +625,7 @@ export default function App() {
   const [params, setParams] = useState({});
   const [sessao, setSessaoState] = useState(null); // null | { tipo: "treinador" } | { tipo: "aluno", atletaId }
   const [modalBackup, setModalBackup] = useState(false);
+  const [splashPronto, setSplashPronto] = useState(false);
   const saveTimer = useRef(null);
 
   const setSessao = useCallback((nova) => {
@@ -432,6 +663,15 @@ export default function App() {
     })();
   }, []);
 
+  // Tela de saudação/splash: fica visível por um instante ao abrir o app
+  // (em vez de pular direto pra tela de login ou mostrar "Carregando...").
+  // Se já existir uma sessão salva, mostra a saudação com o nome da pessoa.
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => setSplashPronto(true), sessao ? 1100 : 500);
+    return () => clearTimeout(t);
+  }, [loaded, sessao]);
+
   // Sincronização em tempo real entre dispositivos (só funciona quando o
   // storage está configurado com um backend compartilhado — ex: Firebase).
   // No preview local (localStorage puro) essa função simplesmente não existe
@@ -464,8 +704,24 @@ export default function App() {
   const nav = (v, p = {}) => { setView(v); setParams(p); };
   const update = useCallback((fn) => setData((prev) => fn(JSON.parse(JSON.stringify(prev)))), []);
 
-  if (!loaded) {
-    return <div className="w-full h-full flex items-center justify-center" style={{ background: C.bg, minHeight: 500 }}><span style={{ color: C.textMuted, fontFamily: FONT_BODY }}>Carregando...</span></div>;
+  if (!loaded || !splashPronto) {
+    const meuAtletaSplash = sessao?.tipo === "aluno" ? data.atletas.find((a) => a.id === sessao.atletaId) : null;
+    const nomeSaudacao = sessao?.tipo === "treinador" ? "Victor" : meuAtletaSplash ? meuAtletaSplash.nome : null;
+    return (
+      <div className="w-full mx-auto flex flex-col items-center justify-center gap-3" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
+        <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ background: C.limeDim, border: `1.5px solid ${C.lime}` }}>
+          <span style={{ fontSize: 28, lineHeight: 1 }}>⚽</span>
+        </div>
+        {nomeSaudacao ? (
+          <p style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: C.text, letterSpacing: 0.5 }}>{getSaudacao(nomeSaudacao)}</p>
+        ) : (
+          <>
+            <p style={{ fontFamily: FONT_DISPLAY, fontSize: 26, color: C.lime, letterSpacing: 2.5 }}>VPSCOUTS</p>
+            <p style={{ color: C.textMuted, fontSize: 12 }}>Bem-vindo(a) ⚽</p>
+          </>
+        )}
+      </div>
+    );
   }
 
   if (!sessao) {
@@ -2427,4 +2683,4 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
       )}
     </div>
   );
-}
+              }
