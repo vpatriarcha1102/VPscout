@@ -18,92 +18,28 @@ installStorageShim();
 const C = {
   bg: "#000000",
   surface: "#0B0E11",
-  surface2: "#12161A",        else if (height > maxDim) { width = Math.round((width * maxDim) / height); height = maxDim; }
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
-      };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
-}
+  surface2: "#12161A",
+  surface3: "#1A2024",
+  line: "#22292E",
+  text: "#EAF6F8",
+  textMuted: "#7C9095",
+  textFaint: "#4C5C60",
+  blue: "#2F86FF",
+  orange: "#FF8A3D",
+  lime: "#2DE0F0",
+  red: "#FF5C5C",
+  redDim: "#432525",
+  limeDim: "#0F343A",
+  yellow: "#FFD23D",
+};
+const GREEN = "#34D399";
+const PALETA_CORES = ["#2F86FF", "#34D399", "#FBBF24", "#FF5C5C", "#A78BFA", "#FF8A3D", "#2DE0F0", "#F472B6", "#84CC16", "#94A3B8"];
 
-function getSaudacao(nome) {
-  const h = new Date().getHours();
-  if (h < 12) return `Bom dia, ${nome} ☀️`;
-  if (h < 18) return `Boa tarde, ${nome} 🌤`;
-  return `Boa noite, ${nome} 🌙`;
-}
-const STORAGE_KEY = "futsal-data-v1";
-const BACKUP_PREFIX = "futsal-backup-";
-const MAX_BACKUPS = 8;
+const FONT_DISPLAY = "'Bebas Neue', 'Oswald', sans-serif";
+const FONT_BODY = "'Inter', -apple-system, sans-serif";
 
-async function listarBackups() {
-  try {
-    const res = await window.storage.list(BACKUP_PREFIX, false);
-    return (res?.keys || []).slice().sort().reverse();
-  } catch (e) { return []; }
-}
-async function criarBackup(data) {
-  const chave = BACKUP_PREFIX + new Date().toISOString().slice(0, 10) + "-" + Date.now();
-  try {
-    await window.storage.set(chave, JSON.stringify(data), false);
-    const chaves = await listarBackups();
-    const excedentes = chaves.slice(MAX_BACKUPS);
-    for (const k of excedentes) { try { await window.storage.delete(k, false); } catch (e) { /* ignora */ } }
-    return chave;
-  } catch (e) { return null; }
-}
-
-const emptyState = () => ({
-  escolas: [],
-  equipes: [],
-  categorias: [],
-  atletas: [],
-  eventos: [],
-  scouts: {},
-  premiacoes: [],
-});
-
-function novoScoutJogo(evento) {
-  const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
-  return {
-    placarCasa: 0,
-    placarVisitante: 0,
-    periodoAtual: periodos[0].numero,
-    eventosScout: [],
-    destaques: {},
-    pontosDestaque: "",
-    pontosMelhorar: "",
-    cronometro: { rodando: false, inicioEpoch: null, acumuladoPeriodoSeg: 0, acumuladoTotalSeg: 0 },
-    minutagem: {},
-    titularesDefinidos: false,
-  };
-}
-
-function tempoTotalAtual(cronometro) {
-  if (!cronometro) return 0;
-  return cronometro.acumuladoTotalSeg + (cronometro.rodando ? (Date.now() - cronometro.inicioEpoch) / 1000 : 0);
-}
-function tempoPeriodoAtual(cronometro) {
-  if (!cronometro) return 0;
-  return cronometro.acumuladoPeriodoSeg + (cronometro.rodando ? (Date.now() - cronometro.inicioEpoch) / 1000 : 0);
-}
-function formatMMSS(totalSeg) {
-  const s = Math.max(0, Math.floor(totalSeg || 0));
-  const m = Math.floor(s / 60), ss = s % 60;
-  return `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
-}
-function minutagemAtleta(scout, atletaId) {
-  const m = scout.minutagem?.[atletaId];
-  if (!m) return 0;
-  const totalAgora = tempoTotalAtual(scout.cronometro);
-  return m.segundosTotais + (m.entradaEmSeg != null ? totalAgora - m.entradaEmSeg : 0);
-}
-function calcularNotaSugerida(scout, atletaId) {
+const POSICOES = ["Goleiro", "Fixo", "Ala Direito", "Ala Esquerdo", "Pivô"];
+const TIPOS_TREINO = ["Técnico", "Tático", "Físico", "Técnico-tático", "Finalização", "Defesa", "Ataque", "Bola parada", "Goleiros", "Transição", "Jogo reduzido", "Coletivo", "Outro"];function calcularNotaSugerida(scout, atletaId) {
   const evs = scout.eventosScout.filter((e) => e.atletaId === atletaId);
   let nota = 6;
   evs.forEach((e) => {
