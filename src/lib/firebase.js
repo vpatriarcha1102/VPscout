@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager } from "firebase/firestore";
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -15,7 +15,19 @@ export const firebaseConfigurado = Boolean(config.apiKey && config.projectId);
 let db = null;
 if (firebaseConfigurado) {
   const app = getApps().length ? getApps()[0] : initializeApp(config);
-  db = getFirestore(app);
+  // Cache local persistente: o app continua funcionando com os últimos dados
+  // conhecidos mesmo sem internet, e sincroniza sozinho assim que a conexão
+  // voltar. Sem isso, qualquer oscilação de rede fazia o app "esquecer" tudo
+  // e voltar pra tela inicial, como se fosse a primeira vez.
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch (e) {
+    // Se o navegador não suportar (raro) ou já tiver sido inicializado antes,
+    // cai para a inicialização padrão, sem cache offline.
+    db = getFirestore(app);
+  }
 }
 
 export { db };
