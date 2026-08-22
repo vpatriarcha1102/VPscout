@@ -4,11 +4,17 @@ import {
   Play, Check, Undo2, Trash2, Pencil, Clock, MapPin,
   Shield, Trophy, Dumbbell, ArrowLeft, Circle, CheckCircle2, XCircle,
   AlertCircle, FileText, Target, Footprints, Star, Repeat, Award, SlidersHorizontal, BarChart3,
-  CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap, ShieldCheck, Download, Upload
+  CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap,
+  Sparkles, Loader2, RotateCcw
 } from "lucide-react";
 import { installStorageShim } from "./lib/storage";
+import { VideoRecordingPanel } from "./components/VideoRecordingPanel";
+import { getAIAnalysisService } from "./services/aiAnalysisService";
+import { obterUrlReproducao } from "./services/videoPlaybackService";
+import { gerarEventosRevisaveis, aplicarEventosConfirmados } from "./lib/iaEventConverter";
 
 installStorageShim();
+
 
 /* ============================================================
    THEME — "sob as luzes da quadra": grafite noturno + duas cores
@@ -121,25 +127,6 @@ function getSaudacao(nome) {
   return `Boa noite, ${nome} 🌙`;
 }
 const STORAGE_KEY = "futsal-data-v1";
-const BACKUP_PREFIX = "futsal-backup-";
-const MAX_BACKUPS = 8;
-
-async function listarBackups() {
-  try {
-    const res = await window.storage.list(BACKUP_PREFIX, false);
-    return (res?.keys || []).slice().sort().reverse();
-  } catch (e) { return []; }
-}
-async function criarBackup(data) {
-  const chave = BACKUP_PREFIX + new Date().toISOString().slice(0, 10) + "-" + Date.now();
-  try {
-    await window.storage.set(chave, JSON.stringify(data), false);
-    const chaves = await listarBackups();
-    const excedentes = chaves.slice(MAX_BACKUPS);
-    for (const k of excedentes) { try { await window.storage.delete(k, false); } catch (e) { /* ignora */ } }
-    return chave;
-  } catch (e) { return null; }
-}
 
 const emptyState = () => ({
   escolas: [],
@@ -164,6 +151,11 @@ function novoScoutJogo(evento) {
     cronometro: { rodando: false, inicioEpoch: null, acumuladoPeriodoSeg: 0, acumuladoTotalSeg: 0 },
     minutagem: {},
     titularesDefinidos: false,
+    // Aditivo (Etapa 3): referência ao vídeo enviado para análise por IA.
+    // Só metadados pequenos e serializáveis — o Blob nunca entra aqui,
+    // fica temporariamente no IndexedDB (src/lib/videoStore.js) até o
+    // upload terminar. null enquanto não houver gravação/upload.
+    videoAnalise: null, // { key, enviadoEm } quando o upload concluir
   };
 }
 
@@ -497,7 +489,7 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
   const stats = agregarEstatisticasAtleta(data, atleta.id);
   const isGoleiro = atleta.posicao === "Goleiro";
   const linhas = [
-    ["Jogos", stats.jogos], ["Minutagem", formatMMSS(stats.minutagemMedia)],
+    ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
     ...(isGoleiro ? [["Defesas", stats.defesas]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
     ["Faltas cometidas", stats.faltasCometidas], ["Faltas sofridas", stats.faltasSofridas],
@@ -530,167 +522,24 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
   );
 }
 
-function BackupPanel({ data, setData, onClose }) {
-  const [backups, setBackups] = useState([]);
-  const [carregando, setCarregando] = useState(true);
-  const [restaurando, setRestaurando] = useState(null);
-  const [msg, setMsg] = useState("");
-
-  const carregarLista = async () => { setBackups(await listarBackups()); };
-  useEffect(() => { (async () => { await carregarLista(); setCarregando(false); })(); }, []);
-
-  const fazerAgora = async () => {
-    setCarregando(true);
-    setMsg("");
-    const chave = await criarBackup(data);
-    if (chave) { setData((prev) => ({ ...prev, ultimoBackupEm: new Date().toISOString() })); setMsg("Backup criado com sucesso."); }
-    else setMsg("Não foi possível criar o backup agora.");
-    await carregarLista();
-    setCarregando(false);
-  };
-
-  const baixarJson = () => {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `vpscouts-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const restaurarDeArquivo = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(reader.result);
-        if (!parsed || typeof parsed !== "object") throw new Error("inválido");
-        if (!window.confirm("Isso vai substituir todos os dados atuais pelos do arquivo. Continuar?")) return;
-        setData({ ...emptyState(), ...parsed });
-        setMsg("Dados restaurados do arquivo.");
-      } catch (err) { setMsg("Arquivo inválido — verifique se é um backup do VPScouts."); }
-    };
-    reader.readAsText(file);
-  };
-
-  const restaurarBackup = async (chave) => {
-    if (!window.confirm("Isso vai substituir todos os dados atuais pelos deste backup. Continuar?")) return;
-    setRestaurando(chave);
-    try {
-      const res = await window.storage.get(chave, false);
-      if (res && res.value) { setData({ ...emptyState(), ...JSON.parse(res.value) }); setMsg("Backup restaurado."); }
-    } catch (e) { setMsg("Não foi possível restaurar esse backup."); }
-    setRestaurando(null);
-  };
-
-  return (
-    <Modal title="Backup" onClose={onClose} wide>
-      <p style={{ color: C.textMuted, fontSize: 12 }} className="mb-3">Um backup automático é feito toda semana. Você também pode fazer um agora, baixar uma cópia no seu celular/computador ou restaurar um backup anterior.</p>
-      {data.ultimoBackupEm && <p style={{ color: C.textFaint, fontSize: 11 }} className="mb-3">Último backup automático: {new Date(data.ultimoBackupEm).toLocaleString("pt-BR")}</p>}
-      {msg && <p style={{ color: C.lime, fontSize: 12 }} className="mb-3">{msg}</p>}
-      <div className="flex flex-col gap-2 mb-4">
-        <Btn variant="primary" onClick={fazerAgora} disabled={carregando}><ShieldCheck size={15} /> Fazer backup agora</Btn>
-        <Btn onClick={baixarJson}><Download size={15} /> Baixar cópia (.json)</Btn>
-        <label className="w-full">
-          <div className="px-4 py-2.5 rounded-lg font-semibold text-sm text-center flex items-center justify-center gap-2" style={{ background: C.surface3, color: C.text }}><Upload size={15} /> Restaurar de um arquivo</div>
-          <input type="file" accept="application/json" className="hidden" onChange={restaurarDeArquivo} />
-        </label>
-      </div>
-      <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 1 }} className="uppercase mb-2">Backups automáticos</p>
-      {carregando ? <p style={{ color: C.textFaint, fontSize: 12 }}>Carregando...</p> : backups.length === 0 ? <p style={{ color: C.textFaint, fontSize: 12 }}>Nenhum backup automático ainda.</p> : (
-        <div className="flex flex-col gap-1.5" style={{ maxHeight: 220, overflowY: "auto" }}>
-          {backups.map((k) => (
-            <div key={k} className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: C.surface2 }}>
-              <span style={{ color: C.text, fontSize: 12 }}>{k.replace(BACKUP_PREFIX, "").slice(0, 10)}</span>
-              <Btn onClick={() => restaurarBackup(k)} disabled={restaurando === k}>{restaurando === k ? "Restaurando..." : "Restaurar"}</Btn>
-            </div>
-          ))}
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-const SESSAO_KEY = "futsal-sessao-v1";
-
 export default function App() {
   const [data, setData] = useState(emptyState());
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [view, setView] = useState("dashboard");
   const [params, setParams] = useState({});
-  const [sessao, setSessaoState] = useState(null); // null | { tipo: "treinador" } | { tipo: "aluno", atletaId }
-  const [modalBackup, setModalBackup] = useState(false);
-  const [splashPronto, setSplashPronto] = useState(false);
+  const [sessao, setSessao] = useState(null); // null | { tipo: "treinador" } | { tipo: "aluno", atletaId }
   const saveTimer = useRef(null);
 
-  const setSessao = useCallback((nova) => {
-    setSessaoState(nova);
-    setView("dashboard");
-    (async () => {
-      try {
-        if (nova) await window.storage.set(SESSAO_KEY, JSON.stringify(nova), false);
-        else await window.storage.delete(SESSAO_KEY, false);
-      } catch (e) { /* best-effort */ }
-    })();
-  }, []);
-
   useEffect(() => {
     (async () => {
-      let loadedData = emptyState();
       try {
         const res = await window.storage.get(STORAGE_KEY, false);
-        if (res && res.value) loadedData = { ...emptyState(), ...JSON.parse(res.value) };
+        if (res && res.value) setData({ ...emptyState(), ...JSON.parse(res.value) });
       } catch (e) { setLoadError(true); }
-      setData(loadedData);
-      try {
-        const resSessao = await window.storage.get(SESSAO_KEY, false);
-        if (resSessao && resSessao.value) setSessaoState(JSON.parse(resSessao.value));
-      } catch (e) { /* sem sessão salva, ok */ }
-      setLoaded(true);
-      // backup automático semanal
-      const seteDias = 7 * 24 * 60 * 60 * 1000;
-      const ultimo = loadedData.ultimoBackupEm ? new Date(loadedData.ultimoBackupEm).getTime() : 0;
-      const temAlgumDado = (loadedData.atletas?.length || 0) > 0 || (loadedData.eventos?.length || 0) > 0;
-      if (temAlgumDado && Date.now() - ultimo > seteDias) {
-        const chave = await criarBackup(loadedData);
-        if (chave) setData((prev) => ({ ...prev, ultimoBackupEm: new Date().toISOString() }));
-      }
+      finally { setLoaded(true); }
     })();
   }, []);
-
-  // Tela de saudação/splash: fica visível por um instante ao abrir o app
-  // (em vez de pular direto pra tela de login ou mostrar "Carregando...").
-  // Se já existir uma sessão salva, mostra a saudação com o nome da pessoa.
-  useEffect(() => {
-    if (!loaded) return;
-    const t = setTimeout(() => setSplashPronto(true), sessao ? 1100 : 500);
-    return () => clearTimeout(t);
-  }, [loaded, sessao]);
-
-  // Sincronização em tempo real entre dispositivos (só funciona quando o
-  // storage está configurado com um backend compartilhado — ex: Firebase).
-  // No preview local (localStorage puro) essa função simplesmente não existe
-  // e o efeito não faz nada, sem quebrar o app.
-  useEffect(() => {
-    if (!loaded || typeof window.storage.subscribe !== "function") return;
-    const unsub = window.storage.subscribe(STORAGE_KEY, (novoJson) => {
-      if (!novoJson) return;
-      try {
-        const novo = JSON.parse(novoJson);
-        setData((prev) => {
-          const prevJson = JSON.stringify(prev);
-          if (novoJson === prevJson) return prev; // ignora eco da própria escrita
-          return { ...emptyState(), ...novo };
-        });
-      } catch (e) { /* ignora payload inválido */ }
-    });
-    return () => { if (typeof unsub === "function") unsub(); };
-  }, [loaded]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -704,31 +553,15 @@ export default function App() {
   const nav = (v, p = {}) => { setView(v); setParams(p); };
   const update = useCallback((fn) => setData((prev) => fn(JSON.parse(JSON.stringify(prev)))), []);
 
-  if (!loaded || !splashPronto) {
-    const meuAtletaSplash = sessao?.tipo === "aluno" ? data.atletas.find((a) => a.id === sessao.atletaId) : null;
-    const nomeSaudacao = sessao?.tipo === "treinador" ? "Victor" : meuAtletaSplash ? meuAtletaSplash.nome : null;
-    return (
-      <div className="w-full mx-auto flex flex-col items-center justify-center gap-3" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
-        <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ background: C.limeDim, border: `1.5px solid ${C.lime}` }}>
-          <span style={{ fontSize: 28, lineHeight: 1 }}>⚽</span>
-        </div>
-        {nomeSaudacao ? (
-          <p style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: C.text, letterSpacing: 0.5 }}>{getSaudacao(nomeSaudacao)}</p>
-        ) : (
-          <>
-            <p style={{ fontFamily: FONT_DISPLAY, fontSize: 26, color: C.lime, letterSpacing: 2.5 }}>VPSCOUTS</p>
-            <p style={{ color: C.textMuted, fontSize: 12 }}>Bem-vindo(a) ⚽</p>
-          </>
-        )}
-      </div>
-    );
+  if (!loaded) {
+    return <div className="w-full h-full flex items-center justify-center" style={{ background: C.bg, minHeight: 500 }}><span style={{ color: C.textMuted, fontFamily: FONT_BODY }}>Carregando...</span></div>;
   }
 
   if (!sessao) {
     return (
       <div className="w-full mx-auto" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap');`}</style>
-        <LoginGate data={data} update={update} onEntrarTreinador={() => setSessao({ tipo: "treinador" })} onEntrarAluno={(atletaId) => setSessao({ tipo: "aluno", atletaId })} />
+        <LoginGate data={data} update={update} onEntrarTreinador={() => { setSessao({ tipo: "treinador" }); setView("dashboard"); }} onEntrarAluno={(atletaId) => { setSessao({ tipo: "aluno", atletaId }); setView("dashboard"); }} />
       </div>
     );
   }
@@ -776,8 +609,7 @@ export default function App() {
               <p style={{ fontFamily: FONT_DISPLAY, fontSize: 21, color: C.lime, letterSpacing: 2.5, lineHeight: 1 }}>VPSCOUTS</p>
               <p style={{ fontSize: 9, color: C.textFaint, letterSpacing: 1, textTransform: "uppercase" }} className="mt-0.5">{readOnly ? "Área do Aluno" : "Plataforma de Scout de Futsal"}</p>
             </div>
-            {!readOnly && <button onClick={() => setModalBackup(true)} style={{ color: C.textMuted }}><ShieldCheck size={18} /></button>}
-            <button onClick={() => setSessao(null)} style={{ color: C.textMuted }}><LogOut size={18} /></button>
+            <button onClick={() => { setSessao(null); setView("dashboard"); }} style={{ color: C.textMuted }}><LogOut size={18} /></button>
           </div>
         )}
         {view === "dashboard" && <Dashboard data={data} nav={nav} meuAtletaId={meuAtletaId} />}
@@ -788,6 +620,7 @@ export default function App() {
         {view === "calendario" && <CalendarioView data={data} update={update} nav={nav} readOnly={readOnly} />}
         {view === "evento-detalhe" && <EventoDetalhe data={data} update={update} params={params} nav={nav} readOnly={readOnly} />}
         {!readOnly && view === "scout-jogo" && <ScoutJogo data={data} update={update} params={params} nav={nav} />}
+        {!readOnly && view === "revisao-ia" && <RevisaoIA data={data} update={update} params={params} nav={nav} />}
         {!readOnly && view === "scout-treino" && <ScoutTreino data={data} update={update} params={params} nav={nav} />}
         {view === "relatorio-jogo" && <RelatorioJogo data={data} params={params} nav={nav} />}
         {view === "relatorio-treino" && <RelatorioTreino data={data} params={params} nav={nav} />}
@@ -810,10 +643,13 @@ export default function App() {
           </div>
         </div>
       )}
-      {modalBackup && <BackupPanel data={data} setData={setData} onClose={() => setModalBackup(false)} />}
     </div>
   );
 }
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
 function Dashboard({ data, nav, meuAtletaId }) {
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick((t) => t + 1), 60000); return () => clearInterval(id); }, []);
@@ -1402,7 +1238,7 @@ function AtletaPerfil({ data, update, params, nav, readOnly }) {
     setCarregandoFoto(false);
   };
   const linhas = [
-    ["Jogos", stats.jogos], ["Minutagem", formatMMSS(stats.minutagemMedia)],
+    ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
     ...(isGoleiro ? [["Defesas", stats.defesas]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
     ["Faltas cometidas", stats.faltasCometidas], ["Faltas sofridas", stats.faltasSofridas],
@@ -1694,6 +1530,128 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
   );
 }
 
+/**
+ * AIAnalysisPanel — Etapa 5/7/8 (parte 1).
+ *
+ * Card "🤖 Analisar com IA" que aparece assim que o upload do vídeo
+ * termina (scout.videoAnalise.key existe). Dispara a análise, faz
+ * polling do status (item 18 do briefing — sem simular progresso
+ * falso: enquanto a Gemini está processando, mostramos só um indicador
+ * de "trabalhando", nunca uma barra numérica inventada) e, quando
+ * pronto, leva para a tela de revisão humana.
+ */
+function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
+  const videoAnalise = scout.videoAnalise;
+  const [erroLocal, setErroLocal] = useState(null);
+  const pollRef = useRef(null);
+
+  const pararPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const consultar = async () => {
+    try {
+      const service = getAIAnalysisService();
+      const st = await service.consultarStatus(evento.id);
+      if (st.status === "concluido") {
+        pararPoll();
+        update((d) => {
+          const s = d.scouts[evento.id];
+          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "concluido", eventosIA: st.eventos || [], analiseAtualizadaEm: Date.now() };
+          return d;
+        });
+      } else if (st.status === "erro") {
+        pararPoll();
+        update((d) => {
+          const s = d.scouts[evento.id];
+          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: st.erro, analiseAtualizadaEm: Date.now() };
+          return d;
+        });
+      }
+      // status "processando" -> continua o polling normalmente
+    } catch (e) {
+      // falha de rede na consulta não é necessariamente falha da análise —
+      // só tenta de novo no próximo tick.
+      console.warn("[AIAnalysisPanel] falha ao consultar status", e);
+    }
+  };
+
+  useEffect(() => {
+    if (videoAnalise?.analiseStatus === "processando") {
+      pollRef.current = setInterval(consultar, 6000);
+      consultar();
+    }
+    return pararPoll;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoAnalise?.analiseStatus]);
+
+  if (!videoAnalise?.key) return null;
+
+  const iniciar = async () => {
+    setErroLocal(null);
+    update((d) => {
+      const s = d.scouts[evento.id];
+      s.videoAnalise = { ...s.videoAnalise, analiseStatus: "processando", analiseErro: null, analiseIniciadaEm: Date.now() };
+      return d;
+    });
+    try {
+      const service = getAIAnalysisService();
+      const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
+      await service.iniciarAnalise({ partidaId: evento.id, videoKey: videoAnalise.key, jogadoresCadastrados });
+    } catch (e) {
+      setErroLocal(e.message);
+      update((d) => {
+        const s = d.scouts[evento.id];
+        s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: e.message };
+        return d;
+      });
+    }
+  };
+
+  const status = videoAnalise.analiseStatus;
+
+  return (
+    <div className="rounded-xl p-4 mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Sparkles size={16} color={C.lime} />
+        <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Análise por IA</span>
+      </div>
+
+      {(!status || status === "idle") && (
+        <button onClick={iniciar} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm" style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}>
+          <Sparkles size={14} /> Analisar com IA
+        </button>
+      )}
+
+      {status === "processando" && (
+        <div className="flex flex-col items-center gap-1.5 py-1">
+          <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
+            <Loader2 size={14} className="animate-spin" /> Analisando a partida — isso pode levar alguns minutos…
+          </div>
+          <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>
+            Pode fechar o app; a análise continua e o resultado fica salvo quando você voltar.
+          </span>
+        </div>
+      )}
+
+      {status === "concluido" && (
+        <button onClick={() => nav("revisao-ia", { id: evento.id })} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm" style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}>
+          🔍 Revisar {videoAnalise.eventosIA?.length || 0} eventos encontrados
+        </button>
+      )}
+
+      {status === "erro" && (
+        <div className="flex flex-col items-center gap-1.5">
+          <div className="flex items-center gap-1.5" style={{ color: C.red, fontSize: 12, textAlign: "center" }}>
+            <AlertTriangle size={14} /> {erroLocal || videoAnalise.analiseErro || "Falha na análise."}
+          </div>
+          <button onClick={iniciar} className="flex items-center gap-1.5 text-xs" style={{ color: C.textMuted }}>
+            <RotateCcw size={12} /> Tentar novamente
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScoutJogo({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const scout = data.scouts[params.id];
@@ -1967,6 +1925,15 @@ function ScoutJogo({ data, update, params, nav }) {
     <div>
       <ScreenHeader title="Scout ao vivo" onBack={() => nav("evento-detalhe", { id: evento.id })} />
       <div className="px-5">
+        <VideoRecordingPanel
+          C={C}
+          partidaId={evento.id}
+          onVideoEnviado={({ key }) => update((d) => {
+            d.scouts[evento.id].videoAnalise = { key, enviadoEm: Date.now() };
+            return d;
+          })}
+        />
+        <AIAnalysisPanel C={C} evento={evento} scout={scout} atletas={atletas} update={update} nav={nav} />
         <Card style={{ background: `linear-gradient(180deg, ${C.surface3}, ${C.surface2})` }}>
           <div className="flex items-center justify-between">
             <span style={{ color: C.textFaint, fontSize: 10, letterSpacing: 1 }}>{periodoAtualObj.label.toUpperCase()}</span>
@@ -2297,6 +2264,200 @@ function ScoutTreino({ data, update, params, nav }) {
 /* ============================================================
    RELATÓRIOS
    ============================================================ */
+/**
+ * RevisaoIA — Etapa 8.
+ *
+ * Tela de revisão humana dos eventos gerados pela IA (item 12 do
+ * briefing). Nada aqui entra em `eventosScout` até o treinador apertar
+ * "Confirmar análise" — a lista é 100% editável antes disso: pode
+ * confirmar, corrigir o jogador, mudar o resultado, ou excluir.
+ */
+function RevisaoIA({ data, update, params, nav }) {
+  const evento = data.eventos.find((e) => e.id === params.id);
+  const scout = data.scouts[params.id];
+  if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
+  const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  const eventosIA = scout.videoAnalise?.eventosIA || [];
+  const videoKey = scout.videoAnalise?.key || null;
+
+  const [itens, setItens] = useState(() => gerarEventosRevisaveis(eventosIA, atletas).sort((a, b) => a.timestampSeg - b.timestampSeg));
+  const [confirmando, setConfirmando] = useState(false);
+  const [apenasNaoIdentificados, setApenasNaoIdentificados] = useState(false);
+
+  // Player do vídeo original — pra rever o lance de um evento (sobretudo
+  // os "não identificado") antes de decidir manualmente.
+  const videoRef = useRef(null);
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [carregandoVideo, setCarregandoVideo] = useState(false);
+  const [erroVideo, setErroVideo] = useState(null);
+
+  useEffect(() => {
+    if (!videoKey) return;
+    let cancelado = false;
+    setCarregandoVideo(true);
+    obterUrlReproducao({ partidaId: evento.id, videoKey })
+      .then(({ url }) => { if (!cancelado) setVideoUrl(url); })
+      .catch((e) => { if (!cancelado) setErroVideo(e.message); })
+      .finally(() => { if (!cancelado) setCarregandoVideo(false); });
+    return () => { cancelado = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoKey]);
+
+  const verLance = (timestampSeg) => {
+    if (!videoRef.current) return;
+    videoRef.current.currentTime = Math.max(0, timestampSeg - 2); // volta 2s antes do lance
+    videoRef.current.play();
+    videoRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const atualizarItem = (idTemp, patch) => setItens((prev) => prev.map((it) => (it.idTemp === idTemp ? { ...it, ...patch } : it)));
+
+  const corConfianca = (nivel) => (nivel === "alta" ? C.lime : nivel === "media" ? C.orange : C.red);
+  const labelTipo = (tipo) => (tipo === "passe" ? "Passe" : tipo === "finalizacao" ? "Finalização" : "Gol");
+  const mmss = (seg) => `${String(Math.floor(seg / 60)).padStart(2, "0")}:${String(Math.floor(seg % 60)).padStart(2, "0")}`;
+
+  const aptos = itens.filter((it) => !it.excluido && it.confirmado);
+  const semJogador = aptos.filter((it) => !it.atletaId).length;
+  const aplicaveis = aptos.length - semJogador;
+  const totalNaoIdentificados = itens.filter((it) => !it.atletaId && !it.excluido).length;
+  const itensExibidos = apenasNaoIdentificados ? itens.filter((it) => !it.atletaId) : itens;
+
+  // Comparação simples scout manual x IA (item 25 — métrica de qualidade).
+  const manuais = scout.eventosScout.filter((e) => e.fonte !== "ia");
+  const comparacao = [
+    { label: "Gols", manual: manuais.filter((e) => e.acao === "gol").length, ia: eventosIA.filter((e) => e.tipo === "gol").length },
+    { label: "Finalizações", manual: manuais.filter((e) => e.acao === "finalizacao_time" && (e.lado || "pro") === "pro").length, ia: eventosIA.filter((e) => e.tipo === "finalizacao").length },
+    { label: "Passes", manual: manuais.filter((e) => e.acao === "passe").length, ia: eventosIA.filter((e) => e.tipo === "passe").length },
+  ];
+
+  const confirmarAnalise = () => {
+    setConfirmando(true);
+    update((d) => {
+      const s = d.scouts[evento.id];
+      const periodoNumero = s.periodoAtual || s.periodos?.[0]?.numero || 1;
+      const n = aplicarEventosConfirmados(s, itens, periodoNumero, uid);
+      s.videoAnalise = { ...s.videoAnalise, confirmadoEm: Date.now(), eventosConfirmadosCount: n };
+      return d;
+    });
+    nav("relatorio-jogo", { id: evento.id });
+  };
+
+  return (
+    <div>
+      <ScreenHeader title="Revisar análise" onBack={() => nav("scout-jogo", { id: evento.id })} subtitle={`${itens.length} eventos encontrados pela IA`} />
+      <div className="px-5 pb-24">
+        {videoKey && (
+          <div className="rounded-xl overflow-hidden mb-3" style={{ background: "#000", border: `1px solid ${C.line}` }}>
+            {carregandoVideo && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
+            {erroVideo && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideo}</p>}
+            {videoUrl && <video ref={videoRef} src={videoUrl} controls preload="metadata" className="w-full" style={{ maxHeight: 220 }} />}
+          </div>
+        )}
+
+        {itens.length === 0 ? (
+          <EmptyHint text="Nenhum evento foi gerado nesta análise." />
+        ) : (
+          <>
+            <Card>
+              <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">Scout manual × IA (nesta partida)</p>
+              {comparacao.map((c) => (
+                <div key={c.label} className="flex items-center justify-between" style={{ fontSize: 12, color: C.textMuted, padding: "3px 0" }}>
+                  <span>{c.label}</span>
+                  <span style={{ color: C.text }}>{c.manual} <span style={{ color: C.textFaint }}>manual</span> · {c.ia} <span style={{ color: C.textFaint }}>IA</span></span>
+                </div>
+              ))}
+            </Card>
+
+            {totalNaoIdentificados > 0 && (
+              <button
+                onClick={() => setApenasNaoIdentificados((v) => !v)}
+                className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs mt-2"
+                style={{ background: apenasNaoIdentificados ? `${C.orange}22` : C.surface2, color: C.orange, border: `1px solid ${C.orange}` }}
+              >
+                <AlertTriangle size={13} /> {apenasNaoIdentificados ? "Mostrando só não identificados" : `Mostrar só não identificados (${totalNaoIdentificados})`}
+              </button>
+            )}
+
+            <div className="flex flex-col gap-2 mt-3">
+              {itensExibidos.map((it) => (
+                <div key={it.idTemp} className="rounded-xl p-3" style={{ background: it.excluido ? "transparent" : C.surface2, border: `1px solid ${it.excluido ? C.line : C.line}`, opacity: it.excluido ? 0.45 : 1 }}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-2">
+                      <span style={{ color: C.textFaint, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{mmss(it.timestampSeg)}</span>
+                      <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{labelTipo(it.tipo)}</span>
+                      {videoUrl && !it.excluido && (
+                        <button onClick={() => verLance(it.timestampSeg)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 10 }}>
+                          <Play size={11} fill={C.lime} /> Ver lance
+                        </button>
+                      )}
+                    </div>
+                    <span className="px-1.5 py-0.5 rounded-full" style={{ fontSize: 10, color: corConfianca(it.nivelConfianca), background: `${corConfianca(it.nivelConfianca)}22` }}>
+                      {Math.round(it.confianca * 100)}%
+                    </span>
+                  </div>
+
+                  {!it.excluido && (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center gap-2">
+                        <select value={it.atletaId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { atletaId: a?.id || null, atletaNumero: a?.numero ?? null, atletaNome: a?.nome || null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.atletaId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
+                          <option value="">{it.atletaNumero != null ? `#${it.atletaNumero} não identificado` : "Não identificado"}</option>
+                          {atletas.map((a) => <option key={a.id} value={a.id}>{a.numero} · {a.nome}</option>)}
+                        </select>
+                        {it.tipo === "passe" && (
+                          <select value={it.destinoId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { destinoId: a?.id || null, destinoNumero: a?.numero ?? null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.destinoId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
+                            <option value="">destino não identificado</option>
+                            {atletas.map((a) => <option key={a.id} value={a.id}>{a.numero} · {a.nome}</option>)}
+                          </select>
+                        )}
+                      </div>
+
+                      {it.tipo === "passe" && (
+                        <select value={it.resultado || "certo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
+                          <option value="certo">Certo</option>
+                          <option value="errado">Errado</option>
+                        </select>
+                      )}
+                      {it.tipo === "finalizacao" && (
+                        <select value={it.resultado || "no_alvo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
+                          <option value="gol">Gol</option>
+                          <option value="no_alvo">No alvo</option>
+                          <option value="bloqueada">Bloqueada</option>
+                          <option value="fora">Fora</option>
+                        </select>
+                      )}
+
+                      <div className="flex items-center justify-between mt-1">
+                        <button onClick={() => atualizarItem(it.idTemp, { confirmado: !it.confirmado })} className="flex items-center gap-1.5 text-xs" style={{ color: it.confirmado ? C.lime : C.textMuted }}>
+                          {it.confirmado ? <CheckCircle2 size={14} /> : <Circle size={14} />} {it.confirmado ? "Confirmado" : "Confirmar"}
+                        </button>
+                        <button onClick={() => atualizarItem(it.idTemp, { excluido: true })} className="flex items-center gap-1 text-xs" style={{ color: C.textFaint }}>
+                          <Trash2 size={13} /> Excluir
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {it.excluido && (
+                    <button onClick={() => atualizarItem(it.idTemp, { excluido: false })} className="text-xs" style={{ color: C.textMuted }}>Restaurar</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {itens.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 px-5 py-3" style={{ background: C.bg, borderTop: `1px solid ${C.line}`, maxWidth: 480, margin: "0 auto" }}>
+          {semJogador > 0 && <p style={{ color: C.orange, fontSize: 10 }} className="text-center mb-1.5">{semJogador} evento(s) confirmado(s) sem jogador identificado não entrarão nas estatísticas.</p>}
+          <Btn variant="primary" className="w-full" onClick={confirmarAnalise} disabled={confirmando}>
+            <Check size={16} /> Confirmar análise ({aplicaveis} evento{aplicaveis === 1 ? "" : "s"})
+          </Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RelatorioJogo({ data, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const scout = data.scouts[params.id];
@@ -2320,6 +2481,13 @@ function RelatorioJogo({ data, params, nav }) {
       faltasCometidas: evs.filter((e) => e.acao === "falta" && e.variante === "Cometida").length,
       faltasSofridas: evs.filter((e) => e.acao === "falta" && e.variante === "Sofrida").length,
       defesas: evs.filter((e) => e.acao === "defesa").length,
+      // Etapa 9 — aditivo: alimentado pelo scout manual (se o treinador
+      // registrar "passe"/"finalizacao_jogador") e pelos eventos
+      // confirmados na revisão da IA (fonte: "ia"), sem lógica separada.
+      passesCertos: evs.filter((e) => e.acao === "passe" && e.variante === "Certo").length,
+      passesErrados: evs.filter((e) => e.acao === "passe" && e.variante === "Errado").length,
+      finalizacoesIndividuais: evs.filter((e) => e.acao === "finalizacao_jogador").length,
+      finalizacoesIndividuaisGol: evs.filter((e) => e.acao === "finalizacao_jogador" && e.variante === "Gol").length,
     };
   };
   const jogadoresComDados = jogadores.map((a) => ({ a, s: statsAtleta(a.id) })).filter(({ s }) => Object.values(s).some((v) => v > 0));
@@ -2410,6 +2578,16 @@ function RelatorioJogo({ data, params, nav }) {
               </div>
               <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-1">Faltas: {s.faltasCometidas} cometidas · {s.faltasSofridas} sofridas</p>
               {(s.positivosPasse > 0 || s.positivosJogada > 0) && <p style={{ color: C.textFaint, fontSize: 10 }}>Positivos: {s.positivosPasse} passe(s) importante(s) · {s.positivosJogada} jogada(s) individual(is)</p>}
+              {(s.passesCertos + s.passesErrados > 0) && (
+                <p style={{ color: C.textFaint, fontSize: 10 }}>
+                  Passes: {s.passesCertos}/{s.passesCertos + s.passesErrados} certos ({Math.round((s.passesCertos / (s.passesCertos + s.passesErrados)) * 100)}%)
+                </p>
+              )}
+              {s.finalizacoesIndividuais > 0 && (
+                <p style={{ color: C.textFaint, fontSize: 10 }}>
+                  Finalizações: {s.finalizacoesIndividuaisGol}/{s.finalizacoesIndividuais} viraram gol
+                </p>
+              )}
             </Card>
           ))}
         </div>
@@ -2683,4 +2861,4 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
       )}
     </div>
   );
-              }
+          }
