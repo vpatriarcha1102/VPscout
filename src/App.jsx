@@ -530,6 +530,9 @@ export default function App() {
   const [params, setParams] = useState({});
   const [sessao, setSessao] = useState(null); // null | { tipo: "treinador" } | { tipo: "aluno", atletaId }
   const saveTimer = useRef(null);
+  // Guarda o último valor que ESTE dispositivo escreveu, para o efeito de
+  // sincronização abaixo não reagir ao próprio eco do Firestore.
+  const ultimoValorEscritoRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -545,10 +548,30 @@ export default function App() {
     if (!loaded) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      try { await window.storage.set(STORAGE_KEY, JSON.stringify(data), false); } catch (e) { /* best-effort */ }
+      const serializado = JSON.stringify(data);
+      ultimoValorEscritoRef.current = serializado;
+      try { await window.storage.set(STORAGE_KEY, serializado, false); } catch (e) { /* best-effort */ }
     }, 350);
     return () => clearTimeout(saveTimer.current);
   }, [data, loaded]);
+
+  // Sincronização em tempo real entre dispositivos — inteiramente aditivo:
+  // só faz algo se `window.storage.subscribe` existir (isto é, se o
+  // Firebase estiver configurado, ver src/lib/storage.js). Sem Firebase,
+  // este efeito não encontra `subscribe` e não faz nada — o app continua
+  // funcionando só em localStorage, exatamente como antes.
+  useEffect(() => {
+    if (!loaded || typeof window.storage.subscribe !== "function") return undefined;
+    const unsubscribe = window.storage.subscribe(STORAGE_KEY, (valorRemoto) => {
+      // Ignora o próprio eco: se o valor que chegou é o mesmo que nós
+      // acabamos de escrever, não há nada de novo vindo de outro dispositivo.
+      if (!valorRemoto || valorRemoto === ultimoValorEscritoRef.current) return;
+      try {
+        setData({ ...emptyState(), ...JSON.parse(valorRemoto) });
+      } catch (e) { /* ignora payload inválido */ }
+    });
+    return () => { if (typeof unsubscribe === "function") unsubscribe(); };
+  }, [loaded]);
 
   const nav = (v, p = {}) => { setView(v); setParams(p); };
   const update = useCallback((fn) => setData((prev) => fn(JSON.parse(JSON.stringify(prev)))), []);
@@ -2861,4 +2884,4 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
       )}
     </div>
   );
-          }
+        }
