@@ -1568,90 +1568,6 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
   const videoAnalise = scout.videoAnalise;
   const [erroLocal, setErroLocal] = useState(null);
   const pollRef = useRef(null);
-
-  const pararPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-
-  const consultar = async () => {
-    try {
-      const service = getAIAnalysisService();
-      const st = await service.consultarStatus(evento.id);
-      if (st.status === "concluido") {
-        pararPoll();
-        update((d) => {
-          const s = d.scouts[evento.id];
-          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "concluido", eventosIA: st.eventos || [], analiseAtualizadaEm: Date.now() };
-          return d;
-        });
-      } else if (st.status === "erro") {
-        pararPoll();
-        update((d) => {
-          const s = d.scouts[evento.id];
-          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: st.erro, analiseAtualizadaEm: Date.now() };
-          return d;
-        });
-      }
-      // status "processando" -> continua o polling normalmente
-    } catch (e) {
-      // falha de rede na consulta não é necessariamente falha da análise —
-      // só tenta de novo no próximo tick.
-      console.warn("[AIAnalysisPanel] falha ao consultar status", e);
-    }
-  };
-
-  useEffect(() => {
-    if (videoAnalise?.analiseStatus === "processando") {
-      pollRef.current = setInterval(consultar, 6000);
-      consultar();
-    }
-    return pararPoll;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoAnalise?.analiseStatus]);
-
-  if (!videoAnalise?.key) return null;
-
-  const iniciar = async () => {
-    setErroLocal(null);
-    update((d) => {
-      const s = d.scouts[evento.id];
-      s.videoAnalise = { ...s.videoAnalise, analiseStatus: "processando", analiseErro: null, analiseIniciadaEm: Date.now() };
-      return d;
-    });
-    try {
-      const service = getAIAnalysisService();
-      const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
-      await service.iniciarAnalise({ partidaId: evento.id, videoKey: videoAnalise.key, jogadoresCadastrados });
-    } catch (e) {
-      setErroLocal(e.message);
-      update((d) => {
-        const s = d.scouts[evento.id];
-        s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: e.message };
-        return d;
-      });
-    }
-  };
-
-  const status = videoAnalise.analiseStatus;
-
-  return (
-    <div className="rounded-xl p-4 mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
-      <div className="flex items-center gap-2 mb-2">
-        <Sparkles size={16} color={C.lime} />
-        <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Análise por IA</span>
-      </div>
-
-      {(!status || status === "idle") && (
-        <button onClick={iniciar} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm" style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}>
-          <Sparkles size={14} /> Analisar com IA
-        </button>
-      )}
-
-      {status === "processando" && (
-        <div className="flex flex-col items-center gap-1.5 py-1">
-          <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
-function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
-  const videoAnalise = scout.videoAnalise;
-  const [erroLocal, setErroLocal] = useState(null);
-  const pollRef = useRef(null);
   const autoIniciadoRef = useRef(false);
   const autoNavegadoRef = useRef(false);
 
@@ -1783,7 +1699,8 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
       )}
     </div>
   );
-            }
+}
+
 
             function ScoutJogo({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
