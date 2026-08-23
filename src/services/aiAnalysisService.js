@@ -18,12 +18,12 @@ async function postJSON(path, body) {
 }
 
 export class AIAnalysisService {
-  async iniciarAnalise({ partidaId, videoKey, jogadoresCadastrados }) {
+  async iniciarAnalise({ partidaId, videoKey, jogadoresCadastrados, coresUniforme }) {
     if (!partidaId || !videoKey) throw new Error("partidaId e videoKey são obrigatórios.");
     const res = await fetch("/.netlify/functions/analyze-video-background", {
       method: "POST",
       headers: headersComToken(),
-      body: JSON.stringify({ partidaId, videoKey, jogadoresCadastrados }),
+      body: JSON.stringify({ partidaId, videoKey, jogadoresCadastrados, coresUniforme }),
     });
     if (!res.ok && res.status !== 202) {
       let detalhe = "";
