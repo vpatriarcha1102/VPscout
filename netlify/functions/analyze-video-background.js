@@ -28,7 +28,13 @@ const EVENTOS_SCHEMA = {
     properties: {
       timestampSeg: { type: SchemaType.NUMBER, description: "Segundos desde o início do vídeo" },
       tipo: { type: SchemaType.STRING, enum: ["passe", "finalizacao"] },
-      atletaNumero: { type: SchemaType.NUMBER, nullable: true, description: "Número da camisa; null se não identificado" },
+      lado: {
+        type: SchemaType.STRING,
+        enum: ["pro", "contra"],
+        nullable: true,
+        description: "Só para tipo=finalizacao: 'pro' se foi a equipe do elenco cadastrado (identificada pela cor do uniforme 'a favor') quem finalizou; 'contra' se foi o time adversário (cor do uniforme 'contra'). Passes são sempre da equipe cadastrada, não precisa preencher.",
+      },
+      atletaNumero: { type: SchemaType.NUMBER, nullable: true, description: "Número da camisa; null se não identificado ou se for jogador do time adversário (lado=contra)" },
       atletaDestinoNumero: { type: SchemaType.NUMBER, nullable: true, description: "Só para passe: número de quem recebeu" },
       resultado: {
         type: SchemaType.STRING,
@@ -47,27 +53,34 @@ async function streamParaBuffer(stream) {
   return Buffer.concat(chunks);
 }
 
-function montarPrompt(jogadoresCadastrados) {
+function montarPrompt(jogadoresCadastrados, coresUniforme) {
   const elenco = (jogadoresCadastrados || [])
     .map((j) => `#${j.numero} ${j.nome}${j.posicao ? ` (${j.posicao})` : ""}`)
     .join(", ");
+  const infoCores = coresUniforme?.favor && coresUniforme?.contra
+    ? `\nUniformes desta partida — MUITO IMPORTANTE para o campo "lado":\n- Uniforme "${coresUniforme.favor.label}" = a equipe do elenco cadastrado acima (lado "pro").\n- Uniforme "${coresUniforme.contra.label}" = o time adversário (lado "contra").\nUse a cor do uniforme de quem finalizou para preencher "lado" corretamente em CADA finalização — inclusive as do adversário, que também devem ser reportadas (com atletaNumero null, já que não fazem parte do elenco cadastrado).`
+    : "";
   return `
 Você é um analista de vídeo de futsal. Assista ao vídeo e identifique eventos
-de jogo do time cujo elenco está listado abaixo, usando o NÚMERO DA CAMISA
-para reconhecer os jogadores.
+de jogo, usando o NÚMERO DA CAMISA para reconhecer os jogadores do elenco
+cadastrado e a COR DO UNIFORME para diferenciar as duas equipes.
 
 Elenco cadastrado: ${elenco || "(não informado)"}.
+${infoCores}
 
 Regras obrigatórias:
 - Devolva SOMENTE eventos que você tem razoável certeza visual de ter visto.
 - NUNCA invente jogador, passe ou finalização. Se não tiver certeza do
   número da camisa, use atletaNumero: null e reduza a confiança.
-- Priorize, nesta ordem: finalizações (incluindo as que resultam em gol), passes.
+- Priorize, nesta ordem: finalizações (incluindo as que resultam em gol, de
+  QUALQUER um dos dois times), passes (só do elenco cadastrado).
 
 Sobre finalizações — ATENÇÃO, isso é crítico:
 - Cada chute a gol é UM ÚNICO evento do tipo "finalizacao". NUNCA crie um
   evento separado só porque a bola entrou — "gol" não é um tipo de evento,
   é um VALOR do campo "resultado" dentro do mesmo evento de finalização.
+- Reporte finalizações das DUAS equipes — sempre preencha "lado" (pro ou
+  contra) usando a cor do uniforme de quem chutou, conforme explicado acima.
 - O campo "resultado" da finalização é obrigatório e deve refletir o que
   REALMENTE aconteceu com a bola, observando a trajetória inteira até ela
   parar, ser defendida ou sair — não assuma "gol" só porque o chute foi na
@@ -102,7 +115,7 @@ export async function handler(event) {
     return;
   }
 
-  const { videoKey, jogadoresCadastrados } = body;
+  const { videoKey, jogadoresCadastrados, coresUniforme } = body;
   let partidaId;
   try {
     partidaId = sanitizarPartidaId(body.partidaId);
@@ -184,7 +197,7 @@ export async function handler(event) {
 
     const resultado = await model.generateContent([
       { fileData: { fileUri: arquivo.uri, mimeType: arquivo.mimeType } },
-      { text: montarPrompt(jogadoresCadastrados) },
+      { text: montarPrompt(jogadoresCadastrados, coresUniforme) },
     ]);
 
     const eventosIA = JSON.parse(resultado.response.text());
