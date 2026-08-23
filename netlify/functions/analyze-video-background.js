@@ -27,10 +27,14 @@ const EVENTOS_SCHEMA = {
     type: SchemaType.OBJECT,
     properties: {
       timestampSeg: { type: SchemaType.NUMBER, description: "Segundos desde o início do vídeo" },
-      tipo: { type: SchemaType.STRING, enum: ["passe", "finalizacao", "gol"] },
+      tipo: { type: SchemaType.STRING, enum: ["passe", "finalizacao"] },
       atletaNumero: { type: SchemaType.NUMBER, nullable: true, description: "Número da camisa; null se não identificado" },
       atletaDestinoNumero: { type: SchemaType.NUMBER, nullable: true, description: "Só para passe: número de quem recebeu" },
-      resultado: { type: SchemaType.STRING, nullable: true, description: "passe: certo|errado. finalizacao: gol|no_alvo|bloqueada|fora" },
+      resultado: {
+        type: SchemaType.STRING,
+        nullable: true,
+        description: "Para passe: certo|errado. Para finalizacao (OBRIGATÓRIO, sempre preencher): gol|no_alvo|bloqueada|fora",
+      },
       confianca: { type: SchemaType.NUMBER, description: "0 a 1" },
     },
     required: ["timestampSeg", "tipo", "confianca"],
@@ -56,9 +60,27 @@ Elenco cadastrado: ${elenco || "(não informado)"}.
 
 Regras obrigatórias:
 - Devolva SOMENTE eventos que você tem razoável certeza visual de ter visto.
-- NUNCA invente jogador, passe, finalização ou gol. Se não tiver certeza do
+- NUNCA invente jogador, passe ou finalização. Se não tiver certeza do
   número da camisa, use atletaNumero: null e reduza a confiança.
-- Priorize, nesta ordem: gols, finalizações, passes.
+- Priorize, nesta ordem: finalizações (incluindo as que resultam em gol), passes.
+
+Sobre finalizações — ATENÇÃO, isso é crítico:
+- Cada chute a gol é UM ÚNICO evento do tipo "finalizacao". NUNCA crie um
+  evento separado só porque a bola entrou — "gol" não é um tipo de evento,
+  é um VALOR do campo "resultado" dentro do mesmo evento de finalização.
+- O campo "resultado" da finalização é obrigatório e deve refletir o que
+  REALMENTE aconteceu com a bola, observando a trajetória inteira até ela
+  parar, ser defendida ou sair — não assuma "gol" só porque o chute foi na
+  direção do gol:
+  - "gol": a bola cruza inteiramente a linha, dentro da trave.
+  - "defendida": o goleiro (ou outro defensor) intercepta a bola antes da
+    linha.
+  - "bloqueada": a bola é bloqueada antes de chegar ao gol (ex.: por um
+    zagueiro).
+  - "fora": a bola passa ao lado, por cima do travessão, ou não entra por
+    qualquer outro motivo.
+- Se o final da trajetória não estiver visível no vídeo, reduza a
+  confiança em vez de assumir "gol" por padrão.
 - confianca reflete sua certeza real (0 a 1), não um valor fixo.
 `.trim();
 }
