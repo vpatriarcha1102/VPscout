@@ -171,7 +171,15 @@ export async function handler(event) {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: "gemini-3.6-flash",
-      generationConfig: { responseMimeType: "application/json", responseSchema: EVENTOS_SCHEMA },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: EVENTOS_SCHEMA,
+        // temperature 0 = sempre a leitura mais criteriosa/provável da cena,
+        // sem variar a resposta entre execuções do mesmo vídeo.
+        temperature: 0,
+        topP: 0.1,
+        topK: 1,
+      },
     });
 
     const resultado = await model.generateContent([
