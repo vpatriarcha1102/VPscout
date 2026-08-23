@@ -151,13 +151,26 @@ function novoScoutJogo(evento) {
     cronometro: { rodando: false, inicioEpoch: null, acumuladoPeriodoSeg: 0, acumuladoTotalSeg: 0 },
     minutagem: {},
     titularesDefinidos: false,
-    // Aditivo (Etapa 3): referência ao vídeo enviado para análise por IA.
-    // Só metadados pequenos e serializáveis — o Blob nunca entra aqui,
-    // fica temporariamente no IndexedDB (src/lib/videoStore.js) até o
-    // upload terminar. null enquanto não houver gravação/upload.
-    videoAnalise: null, // { key, enviadoEm } quando o upload concluir
+    // Cor do uniforme de cada lado nesta partida — escolhida antes da
+    // escalação, usada pela IA para saber de quem é cada lance no vídeo.
+    coresUniforme: null, // { favor: {label, hex}, contra: {label, hex} }
+    // Um vídeo (e sua análise) por tempo de jogo — chave é o número do
+    // período. Cada valor: { key, enviadoEm, analiseStatus, analiseErro,
+    // eventosIA, analiseIniciadaEm, analiseAtualizadaEm }.
+    videosPorPeriodo: {},
   };
 }
+
+const CORES_UNIFORME = [
+  { label: "Branco", hex: "#F2F5F3" },
+  { label: "Preto", hex: "#15181A" },
+  { label: "Vermelho", hex: "#E14848" },
+  { label: "Azul", hex: "#3B7DE8" },
+  { label: "Verde", hex: "#3FA654" },
+  { label: "Amarelo", hex: "#EAC736" },
+  { label: "Laranja", hex: "#E38A3B" },
+  { label: "Roxo", hex: "#8C5CE0" },
+];
 
 function tempoTotalAtual(cronometro) {
   if (!cronometro) return 0;
@@ -522,13 +535,85 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
   );
 }
 
+// A sessão (quem está logado) fica só neste aparelho — nunca deve ir para
+// o Firestore/localStorage compartilhado, senão o login do treinador em um
+// celular "vazaria" para o celular dos alunos. Por isso usa localStorage
+// puro, direto, sem passar pelo window.storage (que é compartilhado).
+const SESSAO_LOCAL_KEY = "vpscouts_sessao_local_v1";
+function lerSessaoLocal() {
+  try {
+    const raw = window.localStorage.getItem(SESSAO_LOCAL_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function gravarSessaoLocal(sessao) {
+  try {
+    if (sessao) window.localStorage.setItem(SESSAO_LOCAL_KEY, JSON.stringify(sessao));
+    else window.localStorage.removeItem(SESSAO_LOCAL_KEY);
+  } catch (e) { /* best-effort */ }
+}
+
+// Tela de saudação — abre o app com fade-in e uma bola de futsal rolando.
+// Funciona 100% offline (só CSS/emoji, nada de rede) e não bloqueia o
+// carregamento dos dados por trás — some sozinha ou ao toque.
+function SplashScreen({ onFim }) {
+  const [saindo, setSaindo] = useState(false);
+
+  useEffect(() => {
+    const t1 = setTimeout(() => setSaindo(true), 1600);
+    const t2 = setTimeout(() => onFim(), 2000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pular = () => { setSaindo(true); setTimeout(onFim, 380); };
+
+  return (
+    <div
+      onClick={pular}
+      className="w-full mx-auto flex flex-col items-center justify-center"
+      style={{
+        background: C.bg,
+        minHeight: 700,
+        maxWidth: 480,
+        fontFamily: FONT_BODY,
+        opacity: saindo ? 0 : 1,
+        transition: "opacity 380ms ease",
+      }}
+    >
+      <style>{`
+        @keyframes vps-fade-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes vps-ball-roll { 0% { transform: translateX(-90px) rotate(0deg); } 100% { transform: translateX(90px) rotate(360deg); } }
+        @keyframes vps-ball-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
+      `}</style>
+      <div style={{ animation: "vps-fade-up 700ms ease both" }} className="flex flex-col items-center">
+        <div className="w-20 h-20 rounded-full flex items-center justify-center mb-4" style={{ background: C.limeDim, border: `1.5px solid ${C.lime}` }}>
+          <span style={{ fontSize: 34, display: "inline-block", animation: "vps-ball-bounce 1s ease-in-out infinite" }}>⚽</span>
+        </div>
+        <p style={{ fontFamily: FONT_DISPLAY, fontSize: 30, color: C.lime, letterSpacing: 3 }}>VPSCOUTS</p>
+        <p style={{ fontSize: 11, color: C.textFaint, letterSpacing: 1 }} className="uppercase mt-1">Plataforma de Scout de Futsal</p>
+      </div>
+      <div className="mt-8" style={{ width: 180, height: 18, position: "relative", overflow: "hidden", animation: "vps-fade-up 700ms ease 150ms both" }}>
+        <span style={{ position: "absolute", left: "50%", top: 0, fontSize: 18, animation: "vps-ball-roll 1.4s linear infinite" }}>⚽</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState(emptyState());
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [view, setView] = useState("dashboard");
   const [params, setParams] = useState({});
-  const [sessao, setSessao] = useState(null); // null | { tipo: "treinador" } | { tipo: "aluno", atletaId }
+  // Carrega a sessão salva neste aparelho já na primeira renderização, para
+  // não "piscar" a tela de login antes de cair na tela inicial de novo.
+  const [sessao, setSessaoState] = useState(lerSessaoLocal); // null | { tipo: "treinador" } | { tipo: "aluno", atletaId }
+  const setSessao = useCallback((nova) => {
+    setSessaoState(nova);
+    gravarSessaoLocal(nova);
+  }, []);
+  const [splashVisivel, setSplashVisivel] = useState(true);
   const saveTimer = useRef(null);
   // Guarda o último valor que ESTE dispositivo escreveu, para o efeito de
   // sincronização abaixo não reagir ao próprio eco do Firestore.
@@ -575,6 +660,13 @@ export default function App() {
 
   const nav = (v, p = {}) => { setView(v); setParams(p); };
   const update = useCallback((fn) => setData((prev) => fn(JSON.parse(JSON.stringify(prev)))), []);
+
+  // Tela de saudação: aparece na abertura do app, mesmo offline, mesmo antes
+  // de terminar de carregar os dados — e depois se desfaz com fade para a
+  // tela de baixo (login ou, se já tinha sessão salva, direto para o início).
+  if (splashVisivel) {
+    return <SplashScreen onFim={() => setSplashVisivel(false)} />;
+  }
 
   if (!loaded) {
     return <div className="w-full h-full flex items-center justify-center" style={{ background: C.bg, minHeight: 500 }}><span style={{ color: C.textMuted, fontFamily: FONT_BODY }}>Carregando...</span></div>;
@@ -632,7 +724,7 @@ export default function App() {
               <p style={{ fontFamily: FONT_DISPLAY, fontSize: 21, color: C.lime, letterSpacing: 2.5, lineHeight: 1 }}>VPSCOUTS</p>
               <p style={{ fontSize: 9, color: C.textFaint, letterSpacing: 1, textTransform: "uppercase" }} className="mt-0.5">{readOnly ? "Área do Aluno" : "Plataforma de Scout de Futsal"}</p>
             </div>
-            <button onClick={() => { setSessao(null); setView("dashboard"); }} style={{ color: C.textMuted }}><LogOut size={18} /></button>
+            <button onClick={() => { setSessao(null); setView("dashboard"); }} style={{ color: C.textMuted }} aria-label="Sair"><LogOut size={18} /></button>
           </div>
         )}
         {view === "dashboard" && <Dashboard data={data} nav={nav} meuAtletaId={meuAtletaId} />}
@@ -1553,154 +1645,6 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
   );
 }
 
-/**
- * AIAnalysisPanel — Etapa 5/7/8 (parte 1).
- *
- * Card "🤖 Analisar com IA" que aparece assim que o upload do vídeo
- * termina (scout.videoAnalise.key existe). Dispara a análise, faz
- * polling do status (item 18 do briefing — sem simular progresso
- * falso: enquanto a Gemini está processando, mostramos só um indicador
- * de "trabalhando", nunca uma barra numérica inventada) e, quando
- * pronto, leva para a tela de revisão humana.
- */
-
-function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
-  const videoAnalise = scout.videoAnalise;
-  const [erroLocal, setErroLocal] = useState(null);
-  const pollRef = useRef(null);
-  const autoIniciadoRef = useRef(false);
-  const autoNavegadoRef = useRef(false);
-
-  const pararPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-
-  const iniciar = async () => {
-    setErroLocal(null);
-    update((d) => {
-      const s = d.scouts[evento.id];
-      s.videoAnalise = { ...s.videoAnalise, analiseStatus: "processando", analiseErro: null, analiseIniciadaEm: Date.now() };
-      return d;
-    });
-    try {
-      const service = getAIAnalysisService();
-      const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
-      await service.iniciarAnalise({ partidaId: evento.id, videoKey: videoAnalise.key, jogadoresCadastrados });
-    } catch (e) {
-      setErroLocal(e.message);
-      update((d) => {
-        const s = d.scouts[evento.id];
-        s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: e.message };
-        return d;
-      });
-    }
-  };
-
-  const consultar = async () => {
-    try {
-      const service = getAIAnalysisService();
-      const st = await service.consultarStatus(evento.id);
-      if (st.status === "concluido") {
-        pararPoll();
-        update((d) => {
-          const s = d.scouts[evento.id];
-          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "concluido", eventosIA: st.eventos || [], analiseAtualizadaEm: Date.now() };
-          return d;
-        });
-      } else if (st.status === "erro") {
-        pararPoll();
-        update((d) => {
-          const s = d.scouts[evento.id];
-          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: st.erro, analiseAtualizadaEm: Date.now() };
-          return d;
-        });
-      }
-      // status "processando" -> continua o polling normalmente
-    } catch (e) {
-      // falha de rede na consulta não é necessariamente falha da análise —
-      // só tenta de novo no próximo tick.
-      console.warn("[AIAnalysisPanel] falha ao consultar status", e);
-    }
-  };
-
-  useEffect(() => {
-    if (videoAnalise?.analiseStatus === "processando") {
-      pollRef.current = setInterval(consultar, 6000);
-      consultar();
-    }
-    return pararPoll;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoAnalise?.analiseStatus]);
-
-  // Início automático: assim que a tela de "Finalizar jogo" aparece com um
-  // vídeo pronto (e a análise ainda não foi feita), começa sozinha — sem
-  // precisar tocar em "Analisar com IA".
-  useEffect(() => {
-    const status = videoAnalise?.analiseStatus;
-    if (videoAnalise?.key && (!status || status === "idle") && !autoIniciadoRef.current) {
-      autoIniciadoRef.current = true;
-      iniciar();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoAnalise?.key, videoAnalise?.analiseStatus]);
-
-  // Navegação automática: assim que a análise termina, já abre a tela de
-  // revisão sozinha — sem precisar tocar em "Revisar eventos".
-  useEffect(() => {
-    if (videoAnalise?.analiseStatus === "concluido" && !autoNavegadoRef.current) {
-      autoNavegadoRef.current = true;
-      nav("revisao-ia", { id: evento.id });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoAnalise?.analiseStatus]);
-
-  if (!videoAnalise?.key) return null;
-
-  const status = videoAnalise.analiseStatus;
-
-  return (
-    <div className="rounded-xl p-4 mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
-      <div className="flex items-center gap-2 mb-2">
-        <Sparkles size={16} color={C.lime} />
-        <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Análise por IA</span>
-      </div>
-
-      {(!status || status === "idle") && (
-        <div className="flex items-center gap-2 justify-center py-1" style={{ color: C.textMuted, fontSize: 12 }}>
-          <Loader2 size={14} className="animate-spin" /> Preparando análise…
-        </div>
-      )}
-
-      {status === "processando" && (
-        <div className="flex flex-col items-center gap-1.5 py-1">
-          <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
-            <Loader2 size={14} className="animate-spin" /> Analisando a partida — isso pode levar alguns minutos…
-          </div>
-          <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>
-            Pode fechar o app; a análise continua e o resultado fica salvo quando você voltar. Assim que
-            terminar, a revisão abre sozinha.
-          </span>
-        </div>
-      )}
-
-      {status === "concluido" && (
-        <button onClick={() => nav("revisao-ia", { id: evento.id })} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm" style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}>
-          🔍 Revisar {videoAnalise.eventosIA?.length || 0} eventos encontrados
-        </button>
-      )}
-
-      {status === "erro" && (
-        <div className="flex flex-col items-center gap-1.5">
-          <div className="flex items-center gap-1.5" style={{ color: C.red, fontSize: 12, textAlign: "center" }}>
-            <AlertTriangle size={14} /> {erroLocal || videoAnalise.analiseErro || "Falha na análise."}
-          </div>
-          <button onClick={iniciar} className="flex items-center gap-1.5 text-xs" style={{ color: C.textMuted }}>
-            <RotateCcw size={12} /> Tentar novamente
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 
             function ScoutJogo({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
@@ -1717,7 +1661,13 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
   const [confirmProximoTempo, setConfirmProximoTempo] = useState(false);
   const [subAntesDeAvancar, setSubAntesDeAvancar] = useState(false);
   const [mvpSelecionado, setMvpSelecionado] = useState(null);
-  const [etapa, setEtapa] = useState(() => (scout?.titularesDefinidos ? "ao_vivo" : "titulares"));
+  const [etapa, setEtapa] = useState(() => {
+    if (params.forcarEtapa) return params.forcarEtapa;
+    if (!scout?.coresUniforme) return "cores";
+    return scout?.titularesDefinidos ? "ao_vivo" : "titulares";
+  });
+  const [corFavorSel, setCorFavorSel] = useState(null);
+  const [corContraSel, setCorContraSel] = useState(null);
   const [titularesSelecionados, setTitularesSelecionados] = useState([]);
   const [ladoFinalizacao, setLadoFinalizacao] = useState("pro");
   const [, forceTick] = useState(0);
@@ -1925,6 +1875,46 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
   };
   const participantes = atletas.filter((a) => scout.minutagem?.[a.id] || scout.eventosScout.some((e) => e.atletaId === a.id));
 
+  if (etapa === "cores") {
+    const confirmarCores = () => {
+      if (!corFavorSel || !corContraSel) return;
+      update((d) => {
+        d.scouts[evento.id].coresUniforme = { favor: corFavorSel, contra: corContraSel };
+        return d;
+      });
+      setEtapa(scout?.titularesDefinidos ? "ao_vivo" : "titulares");
+    };
+    return (
+      <div>
+        <ScreenHeader title="Uniformes da partida" onBack={() => nav("evento-detalhe", { id: evento.id })} subtitle={`${equipe?.nome} × ${evento.adversario}`} />
+        <div className="px-5">
+          <p style={{ color: C.textMuted, fontSize: 12 }} className="mb-4">
+            Escolha a cor de cada uniforme hoje. Isso ajuda a IA a diferenciar sua equipe do adversário nos vídeos.
+          </p>
+          <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">{equipe?.nome} (a favor)</p>
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {CORES_UNIFORME.map((c) => (
+              <button key={"f" + c.hex} onClick={() => setCorFavorSel(c)} className="flex flex-col items-center gap-1 py-2 rounded-lg" style={{ background: corFavorSel?.hex === c.hex ? C.limeDim : C.surface, border: `1.5px solid ${corFavorSel?.hex === c.hex ? C.lime : C.line}` }}>
+                <span style={{ width: 22, height: 22, borderRadius: 999, background: c.hex, border: `1px solid ${C.line}` }} />
+                <span style={{ color: C.textMuted, fontSize: 9 }}>{c.label}</span>
+              </button>
+            ))}
+          </div>
+          <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">{evento.adversario} (adversário)</p>
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {CORES_UNIFORME.map((c) => (
+              <button key={"c" + c.hex} onClick={() => setCorContraSel(c)} disabled={corFavorSel?.hex === c.hex} className="flex flex-col items-center gap-1 py-2 rounded-lg" style={{ background: corContraSel?.hex === c.hex ? C.orangeDim || C.surface2 : C.surface, border: `1.5px solid ${corContraSel?.hex === c.hex ? C.orange : C.line}`, opacity: corFavorSel?.hex === c.hex ? 0.3 : 1 }}>
+                <span style={{ width: 22, height: 22, borderRadius: 999, background: c.hex, border: `1px solid ${C.line}` }} />
+                <span style={{ color: C.textMuted, fontSize: 9 }}>{c.label}</span>
+              </button>
+            ))}
+          </div>
+          <Btn variant="primary" className="w-full" disabled={!corFavorSel || !corContraSel} onClick={confirmarCores}>Confirmar cores <ChevronRight size={15} /></Btn>
+        </div>
+      </div>
+    );
+  }
+
   if (etapa === "titulares") {
     return (
       <div>
@@ -1976,14 +1966,29 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
       <ScreenHeader title="Scout ao vivo" onBack={() => nav("evento-detalhe", { id: evento.id })} />
       <div className="px-5">
         <VideoRecordingPanel
+          key={scout.periodoAtual}
           C={C}
-          partidaId={evento.id}
+          partidaId={`${evento.id}_p${scout.periodoAtual}`}
+          periodoLabel={periodoAtualObj.label}
           onVideoEnviado={({ key }) => update((d) => {
-            d.scouts[evento.id].videoAnalise = { key, enviadoEm: Date.now() };
+            const s = d.scouts[evento.id];
+            s.videosPorPeriodo = s.videosPorPeriodo || {};
+            s.videosPorPeriodo[scout.periodoAtual] = { key, enviadoEm: Date.now() };
             return d;
           })}
         />
-        <AIAnalysisPanel C={C} evento={evento} scout={scout} atletas={atletas} update={update} nav={nav} />
+        {Object.keys(scout.videosPorPeriodo || {}).length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap mb-4" style={{ marginTop: -8 }}>
+            {periodos.map((p) => {
+              const v = (scout.videosPorPeriodo || {})[p.numero];
+              return (
+                <span key={p.numero} className="flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: v?.key ? C.limeDim : C.surface, border: `1px solid ${v?.key ? C.lime : C.line}`, fontSize: 10, color: v?.key ? C.lime : C.textFaint }}>
+                  {v?.key ? <CheckCircle2 size={11} /> : <Circle size={11} />} {p.label}
+                </span>
+              );
+            })}
+          </div>
+        )}
         <Card style={{ background: `linear-gradient(180deg, ${C.surface3}, ${C.surface2})` }}>
           <div className="flex items-center justify-between">
             <span style={{ color: C.textFaint, fontSize: 10, letterSpacing: 1 }}>{periodoAtualObj.label.toUpperCase()}</span>
@@ -2110,7 +2115,11 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
         <div className="flex gap-2 mt-3">
           <Btn className="flex-1" onClick={desfazer}><Undo2 size={15} /> Desfazer</Btn>
           {isUltimoPeriodo ? (
-            <Btn variant="primary" className="flex-1" onClick={() => setEtapa("mvp")}><Check size={15} /> Finalizar jogo</Btn>
+            <Btn variant="primary" className="flex-1" onClick={() => {
+              const temVideoPendente = Object.values(scout.videosPorPeriodo || {}).some((v) => v?.key && !v.confirmadoEm);
+              if (temVideoPendente) nav("revisao-ia", { id: evento.id });
+              else setEtapa("mvp");
+            }}><Check size={15} /> Finalizar jogo</Btn>
           ) : (
             <Btn variant="primary" className="flex-1" onClick={() => setConfirmProximoTempo(true)}><ChevronRight size={15} /> Próximo tempo</Btn>
           )}
@@ -2327,183 +2336,322 @@ function RevisaoIA({ data, update, params, nav }) {
   const scout = data.scouts[params.id];
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
-  const eventosIA = scout.videoAnalise?.eventosIA || [];
-  const videoKey = scout.videoAnalise?.key || null;
+  const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
+  const videosPorPeriodo = scout.videosPorPeriodo || {};
+  const periodosComVideo = periodos.filter((p) => videosPorPeriodo[p.numero]?.key);
+  const cores = scout.coresUniforme;
 
-  const [itens, setItens] = useState(() => gerarEventosRevisaveis(eventosIA, atletas).sort((a, b) => a.timestampSeg - b.timestampSeg));
+  const [itens, setItens] = useState([]);
   const [confirmando, setConfirmando] = useState(false);
   const [apenasNaoIdentificados, setApenasNaoIdentificados] = useState(false);
+  const [videoAtivo, setVideoAtivo] = useState(periodosComVideo[0]?.numero ?? null);
+  const [videoUrls, setVideoUrls] = useState({});
+  const [erroVideoPorPeriodo, setErroVideoPorPeriodo] = useState({});
+  const videoRefs = useRef({});
+  const iniciadosRef = useRef(new Set());
+  const seedadosRef = useRef(new Set());
 
-  // Player do vídeo original — pra rever o lance de um evento (sobretudo
-  // os "não identificado") antes de decidir manualmente.
-  const videoRef = useRef(null);
-  const [videoUrl, setVideoUrl] = useState(null);
-  const [carregandoVideo, setCarregandoVideo] = useState(false);
-  const [erroVideo, setErroVideo] = useState(null);
-
+  // Dispara a análise de cada vídeo que ainda não foi analisado (uma vez
+  // por período) assim que a tela de revisão abre.
   useEffect(() => {
-    if (!videoKey) return;
-    let cancelado = false;
-    setCarregandoVideo(true);
-    obterUrlReproducao({ partidaId: evento.id, videoKey })
-      .then(({ url }) => { if (!cancelado) setVideoUrl(url); })
-      .catch((e) => { if (!cancelado) setErroVideo(e.message); })
-      .finally(() => { if (!cancelado) setCarregandoVideo(false); });
-    return () => { cancelado = true; };
+    periodosComVideo.forEach((p) => {
+      const v = videosPorPeriodo[p.numero];
+      const status = v?.analiseStatus;
+      if ((!status || status === "idle") && !iniciadosRef.current.has(p.numero)) {
+        iniciadosRef.current.add(p.numero);
+        const partidaId = `${evento.id}_p${p.numero}`;
+        update((d) => {
+          const s = d.scouts[evento.id];
+          s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "processando", analiseErro: null, analiseIniciadaEm: Date.now() };
+          return d;
+        });
+        (async () => {
+          try {
+            const service = getAIAnalysisService();
+            const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
+            await service.iniciarAnalise({ partidaId, videoKey: v.key, jogadoresCadastrados, coresUniforme: cores });
+          } catch (e) {
+            update((d) => {
+              const s = d.scouts[evento.id];
+              s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "erro", analiseErro: e.message };
+              return d;
+            });
+          }
+        })();
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoKey]);
+  }, []);
 
-  const verLance = (timestampSeg) => {
-    if (!videoRef.current) return;
-    videoRef.current.currentTime = Math.max(0, timestampSeg - 2); // volta 2s antes do lance
-    videoRef.current.play();
-    videoRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+  // Consulta o status de cada período que está processando, em intervalos.
+  useEffect(() => {
+    const pendentes = periodosComVideo.filter((p) => videosPorPeriodo[p.numero]?.analiseStatus === "processando");
+    if (pendentes.length === 0) return undefined;
+    const id = setInterval(async () => {
+      const service = getAIAnalysisService();
+      for (const p of pendentes) {
+        const partidaId = `${evento.id}_p${p.numero}`;
+        try {
+          const st = await service.consultarStatus(partidaId);
+          if (st.status === "concluido") {
+            update((d) => {
+              const s = d.scouts[evento.id];
+              s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "concluido", eventosIA: st.eventos || [], analiseAtualizadaEm: Date.now() };
+              return d;
+            });
+          } else if (st.status === "erro") {
+            update((d) => {
+              const s = d.scouts[evento.id];
+              s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "erro", analiseErro: st.erro, analiseAtualizadaEm: Date.now() };
+              return d;
+            });
+          }
+        } catch (e) { /* tenta de novo no próximo tick */ }
+      }
+    }, 6000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodosComVideo.map((p) => videosPorPeriodo[p.numero]?.analiseStatus).join(",")]);
+
+  // Assim que um período fica "concluído", junta os eventos dele na lista
+  // de revisão (só uma vez por período, pra não sobrescrever edições que
+  // o treinador já tiver feito manualmente nesse meio-tempo).
+  useEffect(() => {
+    periodosComVideo.forEach((p) => {
+      const v = videosPorPeriodo[p.numero];
+      if (v?.analiseStatus === "concluido" && !seedadosRef.current.has(p.numero)) {
+        seedadosRef.current.add(p.numero);
+        const novos = gerarEventosRevisaveis(v.eventosIA, atletas, p.numero);
+        setItens((prev) => [...prev, ...novos].sort((a, b) => (a.periodoNumero - b.periodoNumero) || (a.timestampSeg - b.timestampSeg)));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodosComVideo.map((p) => videosPorPeriodo[p.numero]?.analiseStatus).join(",")]);
+
+  // Busca a URL de reprodução de cada vídeo (uma vez por período).
+  useEffect(() => {
+    periodosComVideo.forEach((p) => {
+      if (videoUrls[p.numero]) return;
+      obterUrlReproducao({ partidaId: `${evento.id}_p${p.numero}`, videoKey: videosPorPeriodo[p.numero].key })
+        .then(({ url }) => setVideoUrls((prev) => ({ ...prev, [p.numero]: url })))
+        .catch((e) => setErroVideoPorPeriodo((prev) => ({ ...prev, [p.numero]: e.message })));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodosComVideo.length]);
+
+  const verLance = (it) => {
+    setVideoAtivo(it.periodoNumero);
+    setTimeout(() => {
+      const el = videoRefs.current[it.periodoNumero];
+      if (!el) return;
+      el.currentTime = Math.max(0, it.timestampSeg - 2);
+      el.play();
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
   };
 
   const atualizarItem = (idTemp, patch) => setItens((prev) => prev.map((it) => (it.idTemp === idTemp ? { ...it, ...patch } : it)));
 
   const corConfianca = (nivel) => (nivel === "alta" ? C.lime : nivel === "media" ? C.orange : C.red);
-  const labelTipo = (tipo) => (tipo === "passe" ? "Passe" : tipo === "finalizacao" ? "Finalização" : "Gol");
+  const labelTipo = (tipo) => (tipo === "passe" ? "Passe" : "Finalização");
   const mmss = (seg) => `${String(Math.floor(seg / 60)).padStart(2, "0")}:${String(Math.floor(seg % 60)).padStart(2, "0")}`;
 
   const aptos = itens.filter((it) => !it.excluido && it.confirmado);
-  const semJogador = aptos.filter((it) => !it.atletaId).length;
+  const semJogador = aptos.filter((it) => it.tipo === "finalizacao" ? (it.lado === "pro" && !it.atletaId) : !it.atletaId).length;
   const aplicaveis = aptos.length - semJogador;
-  const totalNaoIdentificados = itens.filter((it) => !it.atletaId && !it.excluido).length;
-  const itensExibidos = apenasNaoIdentificados ? itens.filter((it) => !it.atletaId) : itens;
+  const totalNaoIdentificados = itens.filter((it) => !it.excluido && (it.tipo === "passe" ? !it.atletaId : (it.lado === "pro" && !it.atletaId))).length;
+  const itensExibidos = apenasNaoIdentificados ? itens.filter((it) => (it.tipo === "passe" ? !it.atletaId : (it.lado === "pro" && !it.atletaId))) : itens;
 
-  // Comparação simples scout manual x IA (item 25 — métrica de qualidade).
+  const eventosIATotal = periodosComVideo.flatMap((p) => videosPorPeriodo[p.numero]?.eventosIA || []);
   const manuais = scout.eventosScout.filter((e) => e.fonte !== "ia");
   const comparacao = [
-    { label: "Gols", manual: manuais.filter((e) => e.acao === "gol").length, ia: eventosIA.filter((e) => e.tipo === "gol").length },
-    { label: "Finalizações", manual: manuais.filter((e) => e.acao === "finalizacao_time" && (e.lado || "pro") === "pro").length, ia: eventosIA.filter((e) => e.tipo === "finalizacao").length },
-    { label: "Passes", manual: manuais.filter((e) => e.acao === "passe").length, ia: eventosIA.filter((e) => e.tipo === "passe").length },
+    { label: "Gols", manual: manuais.filter((e) => e.acao === "gol").length, ia: itens.filter((it) => it.tipo === "finalizacao" && it.resultado === "gol" && it.lado === "pro").length },
+    { label: "Finalizações a favor", manual: manuais.filter((e) => e.acao === "finalizacao_time" && (e.lado || "pro") === "pro").length, ia: eventosIATotal.filter((e) => e.tipo === "finalizacao" && (e.lado || "pro") === "pro").length },
+    { label: "Finalizações contra", manual: manuais.filter((e) => e.acao === "finalizacao_time" && e.lado === "contra").length, ia: eventosIATotal.filter((e) => e.tipo === "finalizacao" && e.lado === "contra").length },
+    { label: "Passes", manual: manuais.filter((e) => e.acao === "passe").length, ia: eventosIATotal.filter((e) => e.tipo === "passe").length },
   ];
+
+  const todosConcluidosOuErro = periodosComVideo.every((p) => ["concluido", "erro"].includes(videosPorPeriodo[p.numero]?.analiseStatus));
+  const algumProcessando = periodosComVideo.some((p) => videosPorPeriodo[p.numero]?.analiseStatus === "processando");
 
   const confirmarAnalise = () => {
     setConfirmando(true);
     update((d) => {
       const s = d.scouts[evento.id];
-      const periodoNumero = s.periodoAtual || s.periodos?.[0]?.numero || 1;
-      const n = aplicarEventosConfirmados(s, itens, periodoNumero, uid);
-      s.videoAnalise = { ...s.videoAnalise, confirmadoEm: Date.now(), eventosConfirmadosCount: n };
+      const n = aplicarEventosConfirmados(s, itens, uid);
+      periodosComVideo.forEach((p) => {
+        if (s.videosPorPeriodo[p.numero]) s.videosPorPeriodo[p.numero].confirmadoEm = Date.now();
+      });
+      s.eventosConfirmadosCountIA = n;
       return d;
     });
-    nav("relatorio-jogo", { id: evento.id });
+    nav("scout-jogo", { id: evento.id, forcarEtapa: "mvp" });
   };
+
+  const pularRevisao = () => nav("scout-jogo", { id: evento.id, forcarEtapa: "mvp" });
 
   return (
     <div>
-      <ScreenHeader title="Revisar análise" onBack={() => nav("scout-jogo", { id: evento.id })} subtitle={`${itens.length} eventos encontrados pela IA`} />
+      <ScreenHeader title="Revisar jogo" onBack={() => nav("scout-jogo", { id: evento.id })} subtitle={`${periodosComVideo.length} vídeo(s) · ${itens.length} evento(s) encontrados`} />
       <div className="px-5 pb-24">
-        {videoKey && (
-          <div className="rounded-xl overflow-hidden mb-3" style={{ background: "#000", border: `1px solid ${C.line}` }}>
-            {carregandoVideo && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
-            {erroVideo && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideo}</p>}
-            {videoUrl && <video ref={videoRef} src={videoUrl} controls preload="metadata" className="w-full" style={{ maxHeight: 220 }} />}
+        {cores && (
+          <div className="flex items-center gap-3 mb-3 text-xs" style={{ color: C.textMuted }}>
+            <span className="flex items-center gap-1"><span style={{ width: 12, height: 12, borderRadius: 999, background: cores.favor.hex, border: `1px solid ${C.line}`, display: "inline-block" }} /> A favor</span>
+            <span className="flex items-center gap-1"><span style={{ width: 12, height: 12, borderRadius: 999, background: cores.contra.hex, border: `1px solid ${C.line}`, display: "inline-block" }} /> Adversário</span>
           </div>
         )}
 
-        {itens.length === 0 ? (
-          <EmptyHint text="Nenhum evento foi gerado nesta análise." />
+        {periodosComVideo.length === 0 ? (
+          <EmptyHint text="Nenhum vídeo foi gravado nesta partida." />
         ) : (
           <>
-            <Card>
-              <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">Scout manual × IA (nesta partida)</p>
-              {comparacao.map((c) => (
-                <div key={c.label} className="flex items-center justify-between" style={{ fontSize: 12, color: C.textMuted, padding: "3px 0" }}>
-                  <span>{c.label}</span>
-                  <span style={{ color: C.text }}>{c.manual} <span style={{ color: C.textFaint }}>manual</span> · {c.ia} <span style={{ color: C.textFaint }}>IA</span></span>
-                </div>
-              ))}
-            </Card>
+            <div className="flex gap-1.5 mb-3">
+              {periodosComVideo.map((p) => {
+                const st = videosPorPeriodo[p.numero]?.analiseStatus;
+                return (
+                  <button key={p.numero} onClick={() => setVideoAtivo(p.numero)} className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: videoAtivo === p.numero ? C.limeDim : C.surface, border: `1px solid ${videoAtivo === p.numero ? C.lime : C.line}`, color: videoAtivo === p.numero ? C.lime : C.textMuted }}>
+                    {st === "processando" && <Loader2 size={12} className="animate-spin" />}
+                    {st === "concluido" && <CheckCircle2 size={12} />}
+                    {st === "erro" && <AlertTriangle size={12} color={C.red} />}
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
 
-            {totalNaoIdentificados > 0 && (
-              <button
-                onClick={() => setApenasNaoIdentificados((v) => !v)}
-                className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs mt-2"
-                style={{ background: apenasNaoIdentificados ? `${C.orange}22` : C.surface2, color: C.orange, border: `1px solid ${C.orange}` }}
-              >
-                <AlertTriangle size={13} /> {apenasNaoIdentificados ? "Mostrando só não identificados" : `Mostrar só não identificados (${totalNaoIdentificados})`}
-              </button>
+            {periodosComVideo.map((p) => (
+              <div key={p.numero} className="rounded-xl overflow-hidden mb-3" style={{ background: "#000", border: `1px solid ${C.line}`, display: videoAtivo === p.numero ? "block" : "none" }}>
+                {erroVideoPorPeriodo[p.numero] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorPeriodo[p.numero]}</p>}
+                {!erroVideoPorPeriodo[p.numero] && !videoUrls[p.numero] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
+                {videoUrls[p.numero] && (
+                  <video ref={(el) => { videoRefs.current[p.numero] = el; }} src={videoUrls[p.numero]} controls preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
+                )}
+              </div>
+            ))}
+
+            {algumProcessando && (
+              <div className="rounded-xl p-4 mb-3 flex flex-col items-center gap-1.5" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
+                <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
+                  <Loader2 size={14} className="animate-spin" /> Analisando vídeo(s) — isso pode levar alguns minutos…
+                </div>
+                <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>Pode continuar depois — o progresso fica salvo.</span>
+              </div>
             )}
 
-            <div className="flex flex-col gap-2 mt-3">
-              {itensExibidos.map((it) => (
-                <div key={it.idTemp} className="rounded-xl p-3" style={{ background: it.excluido ? "transparent" : C.surface2, border: `1px solid ${it.excluido ? C.line : C.line}`, opacity: it.excluido ? 0.45 : 1 }}>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-2">
-                      <span style={{ color: C.textFaint, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{mmss(it.timestampSeg)}</span>
-                      <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{labelTipo(it.tipo)}</span>
-                      {videoUrl && !it.excluido && (
-                        <button onClick={() => verLance(it.timestampSeg)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 10 }}>
-                          <Play size={11} fill={C.lime} /> Ver lance
-                        </button>
-                      )}
+            {itens.length === 0 && todosConcluidosOuErro ? (
+              <EmptyHint text="Nenhum evento foi encontrado pela análise." />
+            ) : itens.length > 0 && (
+              <>
+                <Card>
+                  <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">Scout manual × IA (nesta partida)</p>
+                  {comparacao.map((c) => (
+                    <div key={c.label} className="flex items-center justify-between" style={{ fontSize: 12, color: C.textMuted, padding: "3px 0" }}>
+                      <span>{c.label}</span>
+                      <span style={{ color: C.text }}>{c.manual} <span style={{ color: C.textFaint }}>manual</span> · {c.ia} <span style={{ color: C.textFaint }}>IA</span></span>
                     </div>
-                    <span className="px-1.5 py-0.5 rounded-full" style={{ fontSize: 10, color: corConfianca(it.nivelConfianca), background: `${corConfianca(it.nivelConfianca)}22` }}>
-                      {Math.round(it.confianca * 100)}%
-                    </span>
-                  </div>
+                  ))}
+                </Card>
 
-                  {!it.excluido && (
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex items-center gap-2">
-                        <select value={it.atletaId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { atletaId: a?.id || null, atletaNumero: a?.numero ?? null, atletaNome: a?.nome || null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.atletaId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
-                          <option value="">{it.atletaNumero != null ? `#${it.atletaNumero} não identificado` : "Não identificado"}</option>
-                          {atletas.map((a) => <option key={a.id} value={a.id}>{a.numero} · {a.nome}</option>)}
-                        </select>
-                        {it.tipo === "passe" && (
-                          <select value={it.destinoId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { destinoId: a?.id || null, destinoNumero: a?.numero ?? null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.destinoId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
-                            <option value="">destino não identificado</option>
-                            {atletas.map((a) => <option key={a.id} value={a.id}>{a.numero} · {a.nome}</option>)}
-                          </select>
-                        )}
+                {totalNaoIdentificados > 0 && (
+                  <button
+                    onClick={() => setApenasNaoIdentificados((v) => !v)}
+                    className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs mt-2"
+                    style={{ background: apenasNaoIdentificados ? `${C.orange}22` : C.surface2, color: C.orange, border: `1px solid ${C.orange}` }}
+                  >
+                    <AlertTriangle size={13} /> {apenasNaoIdentificados ? "Mostrando só não identificados" : `Mostrar só não identificados (${totalNaoIdentificados})`}
+                  </button>
+                )}
+
+                <div className="flex flex-col gap-2 mt-3">
+                  {itensExibidos.map((it) => (
+                    <div key={it.idTemp} className="rounded-xl p-3" style={{ background: it.excluido ? "transparent" : C.surface2, border: `1px solid ${C.line}`, opacity: it.excluido ? 0.45 : 1 }}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-2">
+                          <span style={{ color: C.textFaint, fontSize: 10 }}>{periodos.find((p) => p.numero === it.periodoNumero)?.label}</span>
+                          <span style={{ color: C.textFaint, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{mmss(it.timestampSeg)}</span>
+                          <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{labelTipo(it.tipo)}</span>
+                          {videoUrls[it.periodoNumero] && !it.excluido && (
+                            <button onClick={() => verLance(it)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 10 }}>
+                              <Play size={11} fill={C.lime} /> Ver lance
+                            </button>
+                          )}
+                        </div>
+                        <span className="px-1.5 py-0.5 rounded-full" style={{ fontSize: 10, color: corConfianca(it.nivelConfianca), background: `${corConfianca(it.nivelConfianca)}22` }}>
+                          {Math.round(it.confianca * 100)}%
+                        </span>
                       </div>
 
-                      {it.tipo === "passe" && (
-                        <select value={it.resultado || "certo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
-                          <option value="certo">Certo</option>
-                          <option value="errado">Errado</option>
-                        </select>
-                      )}
-                      {it.tipo === "finalizacao" && (
-                        <select value={it.resultado || "no_alvo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
-                          <option value="gol">Gol</option>
-                          <option value="no_alvo">No alvo</option>
-                          <option value="bloqueada">Bloqueada</option>
-                          <option value="fora">Fora</option>
-                        </select>
-                      )}
+                      {!it.excluido && (
+                        <div className="flex flex-col gap-1.5">
+                          {it.tipo === "finalizacao" && (
+                            <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+                              <button onClick={() => atualizarItem(it.idTemp, { lado: "pro" })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "pro" ? C.limeDim : "transparent", color: it.lado === "pro" ? C.lime : C.textMuted }}>A favor</button>
+                              <button onClick={() => atualizarItem(it.idTemp, { lado: "contra", atletaId: null })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "contra" ? `${C.orange}22` : "transparent", color: it.lado === "contra" ? C.orange : C.textMuted }}>Contra (adversário)</button>
+                            </div>
+                          )}
 
-                      <div className="flex items-center justify-between mt-1">
-                        <button onClick={() => atualizarItem(it.idTemp, { confirmado: !it.confirmado })} className="flex items-center gap-1.5 text-xs" style={{ color: it.confirmado ? C.lime : C.textMuted }}>
-                          {it.confirmado ? <CheckCircle2 size={14} /> : <Circle size={14} />} {it.confirmado ? "Confirmado" : "Confirmar"}
-                        </button>
-                        <button onClick={() => atualizarItem(it.idTemp, { excluido: true })} className="flex items-center gap-1 text-xs" style={{ color: C.textFaint }}>
-                          <Trash2 size={13} /> Excluir
-                        </button>
-                      </div>
+                          {(it.tipo === "passe" || it.lado === "pro") && (
+                            <div className="flex items-center gap-2">
+                              <select value={it.atletaId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { atletaId: a?.id || null, atletaNumero: a?.numero ?? null, atletaNome: a?.nome || null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.atletaId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
+                                <option value="">{it.atletaNumero != null ? `#${it.atletaNumero} não identificado` : "Não identificado"}</option>
+                                {atletas.map((a) => <option key={a.id} value={a.id}>{a.numero} · {a.nome}</option>)}
+                              </select>
+                              {it.tipo === "passe" && (
+                                <select value={it.destinoId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { destinoId: a?.id || null, destinoNumero: a?.numero ?? null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.destinoId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
+                                  <option value="">destino não identificado</option>
+                                  {atletas.map((a) => <option key={a.id} value={a.id}>{a.numero} · {a.nome}</option>)}
+                                </select>
+                              )}
+                            </div>
+                          )}
+
+                          {it.tipo === "passe" && (
+                            <select value={it.resultado || "certo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
+                              <option value="certo">Certo</option>
+                              <option value="errado">Errado</option>
+                            </select>
+                          )}
+                          {it.tipo === "finalizacao" && (
+                            <select value={it.resultado || "no_alvo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
+                              <option value="gol">Gol</option>
+                              <option value="no_alvo">No alvo</option>
+                              <option value="bloqueada">Bloqueada</option>
+                              <option value="fora">Fora</option>
+                            </select>
+                          )}
+
+                          <div className="flex items-center justify-between mt-1">
+                            <button onClick={() => atualizarItem(it.idTemp, { confirmado: !it.confirmado })} className="flex items-center gap-1.5 text-xs" style={{ color: it.confirmado ? C.lime : C.textMuted }}>
+                              {it.confirmado ? <CheckCircle2 size={14} /> : <Circle size={14} />} {it.confirmado ? "Confirmado" : "Confirmar"}
+                            </button>
+                            <button onClick={() => atualizarItem(it.idTemp, { excluido: true })} className="flex items-center gap-1 text-xs" style={{ color: C.textFaint }}>
+                              <Trash2 size={13} /> Excluir
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {it.excluido && (
+                        <button onClick={() => atualizarItem(it.idTemp, { excluido: false })} className="text-xs" style={{ color: C.textMuted }}>Restaurar</button>
+                      )}
                     </div>
-                  )}
-                  {it.excluido && (
-                    <button onClick={() => atualizarItem(it.idTemp, { excluido: false })} className="text-xs" style={{ color: C.textMuted }}>Restaurar</button>
-                  )}
+                  ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
           </>
         )}
       </div>
 
-      {itens.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 px-5 py-3" style={{ background: C.bg, borderTop: `1px solid ${C.line}`, maxWidth: 480, margin: "0 auto" }}>
-          {semJogador > 0 && <p style={{ color: C.orange, fontSize: 10 }} className="text-center mb-1.5">{semJogador} evento(s) confirmado(s) sem jogador identificado não entrarão nas estatísticas.</p>}
+      <div className="fixed bottom-0 left-0 right-0 px-5 py-3" style={{ background: C.bg, borderTop: `1px solid ${C.line}`, maxWidth: 480, margin: "0 auto" }}>
+        {semJogador > 0 && <p style={{ color: C.orange, fontSize: 10 }} className="text-center mb-1.5">{semJogador} evento(s) confirmado(s) sem jogador identificado não entrarão nas estatísticas individuais.</p>}
+        {itens.length > 0 ? (
           <Btn variant="primary" className="w-full" onClick={confirmarAnalise} disabled={confirmando}>
             <Check size={16} /> Confirmar análise ({aplicaveis} evento{aplicaveis === 1 ? "" : "s"})
           </Btn>
-        </div>
-      )}
+        ) : (
+          <Btn className="w-full" onClick={pularRevisao}>Continuar sem eventos de IA <ChevronRight size={15} /></Btn>
+        )}
+      </div>
     </div>
   );
 }
