@@ -1563,6 +1563,7 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
  * de "trabalhando", nunca uma barra numérica inventada) e, quando
  * pronto, leva para a tela de revisão humana.
  */
+
 function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
   const videoAnalise = scout.videoAnalise;
   const [erroLocal, setErroLocal] = useState(null);
@@ -1784,7 +1785,7 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
   );
             }
 
-function ScoutJogo({ data, update, params, nav }) {
+            function ScoutJogo({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const scout = data.scouts[params.id];
   const [atletaAtivo, setAtletaAtivo] = useState(null);
