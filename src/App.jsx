@@ -1647,10 +1647,119 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
       {status === "processando" && (
         <div className="flex flex-col items-center gap-1.5 py-1">
           <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
+function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
+  const videoAnalise = scout.videoAnalise;
+  const [erroLocal, setErroLocal] = useState(null);
+  const pollRef = useRef(null);
+  const autoIniciadoRef = useRef(false);
+  const autoNavegadoRef = useRef(false);
+
+  const pararPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const iniciar = async () => {
+    setErroLocal(null);
+    update((d) => {
+      const s = d.scouts[evento.id];
+      s.videoAnalise = { ...s.videoAnalise, analiseStatus: "processando", analiseErro: null, analiseIniciadaEm: Date.now() };
+      return d;
+    });
+    try {
+      const service = getAIAnalysisService();
+      const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
+      await service.iniciarAnalise({ partidaId: evento.id, videoKey: videoAnalise.key, jogadoresCadastrados });
+    } catch (e) {
+      setErroLocal(e.message);
+      update((d) => {
+        const s = d.scouts[evento.id];
+        s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: e.message };
+        return d;
+      });
+    }
+  };
+
+  const consultar = async () => {
+    try {
+      const service = getAIAnalysisService();
+      const st = await service.consultarStatus(evento.id);
+      if (st.status === "concluido") {
+        pararPoll();
+        update((d) => {
+          const s = d.scouts[evento.id];
+          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "concluido", eventosIA: st.eventos || [], analiseAtualizadaEm: Date.now() };
+          return d;
+        });
+      } else if (st.status === "erro") {
+        pararPoll();
+        update((d) => {
+          const s = d.scouts[evento.id];
+          s.videoAnalise = { ...s.videoAnalise, analiseStatus: "erro", analiseErro: st.erro, analiseAtualizadaEm: Date.now() };
+          return d;
+        });
+      }
+      // status "processando" -> continua o polling normalmente
+    } catch (e) {
+      // falha de rede na consulta não é necessariamente falha da análise —
+      // só tenta de novo no próximo tick.
+      console.warn("[AIAnalysisPanel] falha ao consultar status", e);
+    }
+  };
+
+  useEffect(() => {
+    if (videoAnalise?.analiseStatus === "processando") {
+      pollRef.current = setInterval(consultar, 6000);
+      consultar();
+    }
+    return pararPoll;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoAnalise?.analiseStatus]);
+
+  // Início automático: assim que a tela de "Finalizar jogo" aparece com um
+  // vídeo pronto (e a análise ainda não foi feita), começa sozinha — sem
+  // precisar tocar em "Analisar com IA".
+  useEffect(() => {
+    const status = videoAnalise?.analiseStatus;
+    if (videoAnalise?.key && (!status || status === "idle") && !autoIniciadoRef.current) {
+      autoIniciadoRef.current = true;
+      iniciar();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoAnalise?.key, videoAnalise?.analiseStatus]);
+
+  // Navegação automática: assim que a análise termina, já abre a tela de
+  // revisão sozinha — sem precisar tocar em "Revisar eventos".
+  useEffect(() => {
+    if (videoAnalise?.analiseStatus === "concluido" && !autoNavegadoRef.current) {
+      autoNavegadoRef.current = true;
+      nav("revisao-ia", { id: evento.id });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoAnalise?.analiseStatus]);
+
+  if (!videoAnalise?.key) return null;
+
+  const status = videoAnalise.analiseStatus;
+
+  return (
+    <div className="rounded-xl p-4 mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Sparkles size={16} color={C.lime} />
+        <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Análise por IA</span>
+      </div>
+
+      {(!status || status === "idle") && (
+        <div className="flex items-center gap-2 justify-center py-1" style={{ color: C.textMuted, fontSize: 12 }}>
+          <Loader2 size={14} className="animate-spin" /> Preparando análise…
+        </div>
+      )}
+
+      {status === "processando" && (
+        <div className="flex flex-col items-center gap-1.5 py-1">
+          <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
             <Loader2 size={14} className="animate-spin" /> Analisando a partida — isso pode levar alguns minutos…
           </div>
           <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>
-            Pode fechar o app; a análise continua e o resultado fica salvo quando você voltar.
+            Pode fechar o app; a análise continua e o resultado fica salvo quando você voltar. Assim que
+            terminar, a revisão abre sozinha.
           </span>
         </div>
       )}
@@ -1673,7 +1782,7 @@ function AIAnalysisPanel({ C, evento, scout, atletas, update, nav }) {
       )}
     </div>
   );
-}
+            }
 
 function ScoutJogo({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
