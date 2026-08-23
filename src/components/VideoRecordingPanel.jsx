@@ -9,7 +9,7 @@ function formatMMSS(totalSeg) {
   return `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
-export function VideoRecordingPanel({ C, partidaId, onVideoEnviado }) {
+export function VideoRecordingPanel({ C, partidaId, periodoLabel, onVideoEnviado }) {
   const rec = useVideoRecorder();
   const upload = useVideoUpload(partidaId);
   const [mostrarDicas, setMostrarDicas] = useState(false);
@@ -54,7 +54,7 @@ export function VideoRecordingPanel({ C, partidaId, onVideoEnviado }) {
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <Video size={16} color={C.textMuted} />
-          <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Gravação da partida</span>
+          <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>Gravação {periodoLabel ? `— ${periodoLabel}` : "da partida"}</span>
         </div>
         <button onClick={() => setMostrarDicas((v) => !v)} className="flex items-center gap-1" style={{ color: C.textFaint, fontSize: 11 }}>
           <Info size={13} /> dicas
