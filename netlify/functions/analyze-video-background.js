@@ -9,6 +9,15 @@ import { HeadObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { getR2Client, getBucket, verificarToken, salvarJSON, sanitizarPartidaId } from "./_r2Client.js";
+import { writeFile, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function extensaoPara(contentType) {
+  if (contentType?.includes("mp4")) return "mp4";
+  if (contentType?.includes("quicktime")) return "mov";
+  return "webm";
+}
 
 const LIMITE_SEGURO_BYTES = 500 * 1024 * 1024; // 500MB
 
@@ -111,11 +120,22 @@ export async function handler(event) {
     const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: videoKey }));
     const bufferVideo = await streamParaBuffer(obj.Body);
 
+    // A biblioteca do Gemini (uploadFile) exige um CAMINHO de arquivo em
+    // disco, não aceita o conteúdo binário direto — por isso gravamos o
+    // vídeo num arquivo temporário antes de enviar, e apagamos depois.
+    const caminhoTemp = join(tmpdir(), `vpscouts-${partidaId}-${Date.now()}.${extensaoPara(contentType)}`);
+    await writeFile(caminhoTemp, bufferVideo);
+
     const fileManager = new GoogleAIFileManager(apiKey);
-    const uploadResult = await fileManager.uploadFile(bufferVideo, {
-      mimeType: contentType,
-      displayName: `vpscouts-${partidaId}`,
-    });
+    let uploadResult;
+    try {
+      uploadResult = await fileManager.uploadFile(caminhoTemp, {
+        mimeType: contentType,
+        displayName: `vpscouts-${partidaId}`,
+      });
+    } finally {
+      await unlink(caminhoTemp).catch(() => {});
+    }
 
     let arquivo = uploadResult.file;
     while (arquivo.state === FileState.PROCESSING) {
