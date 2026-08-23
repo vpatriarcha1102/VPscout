@@ -77,28 +77,29 @@ export function aplicarEventosConfirmados(scout, itens, periodoNumero, uid) {
         fonte: "ia",
         confianca: it.confianca,
       });
-    } else if (it.tipo === "gol") {
-      scout.placarCasa = (scout.placarCasa || 0) + 1;
-      scout.eventosScout.push({
-        id: uid(),
-        acao: "gol",
-        atletaId: it.atletaId || null,
-        variante: null,
-        periodoNumero,
-        ts: agora,
-        fonte: "ia",
-        confianca: it.confianca,
-      });
-      scout.eventosScout.push({
-        id: uid(),
-        acao: "finalizacao_time",
-        atletaId: null,
-        variante: "Gol",
-        lado: "pro",
-        periodoNumero,
-        ts: agora,
-        fonte: "ia",
-      });
+      if (it.resultado === "gol") {
+        scout.placarCasa = (scout.placarCasa || 0) + 1;
+        scout.eventosScout.push({
+          id: uid(),
+          acao: "gol",
+          atletaId: it.atletaId,
+          variante: null,
+          periodoNumero,
+          ts: agora,
+          fonte: "ia",
+          confianca: it.confianca,
+        });
+        scout.eventosScout.push({
+          id: uid(),
+          acao: "finalizacao_time",
+          atletaId: null,
+          variante: "Gol",
+          lado: "pro",
+          periodoNumero,
+          ts: agora,
+          fonte: "ia",
+        });
+      }
     }
   }
   return validos.length;
