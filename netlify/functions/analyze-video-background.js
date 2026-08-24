@@ -184,6 +184,9 @@ export async function handler(event) {
         `longos está prevista para a Etapa 11.`
       );
     }
+    if (tamanhoBytes < 20 * 1024) {
+      throw new Error("Trecho de vídeo curto demais pra analisar (menos de 20KB) — normalmente indica uma gravação que durou menos de 1 segundo.");
+    }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY não configurada nas variáveis de ambiente da Netlify.");
@@ -209,7 +212,12 @@ export async function handler(event) {
     }
 
     let arquivo = uploadResult.file;
+    const INICIO_ESPERA = Date.now();
+    const LIMITE_ESPERA_MS = 3 * 60 * 1000; // 3 minutos — evita ficar "processando" pra sempre
     while (arquivo.state === FileState.PROCESSING) {
+      if (Date.now() - INICIO_ESPERA > LIMITE_ESPERA_MS) {
+        throw new Error("O processamento do vídeo pela IA demorou demais e foi cancelado. Tente novamente — se persistir, o trecho pode estar corrompido ou vazio demais.");
+      }
       await new Promise((r) => setTimeout(r, 5000));
       arquivo = await fileManager.getFile(arquivo.name);
     }
