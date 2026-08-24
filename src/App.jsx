@@ -3059,4 +3059,4 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
       )}
     </div>
   );
-        }
+    }
