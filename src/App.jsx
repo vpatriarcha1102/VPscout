@@ -5,11 +5,12 @@ import {
   Shield, Trophy, Dumbbell, ArrowLeft, Circle, CheckCircle2, XCircle,
   AlertCircle, FileText, Target, Footprints, Star, Repeat, Award, SlidersHorizontal, BarChart3,
   CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap,
-  Sparkles, Loader2, RotateCcw
+  Sparkles, Loader2, RotateCcw, HardDriveDownload, FolderOpen
 } from "lucide-react";
 import { installStorageShim } from "./lib/storage";
 import { VideoRecordingPanel } from "./components/VideoRecordingPanel";
 import { getAIAnalysisService } from "./services/aiAnalysisService";
+import { useAnaliseAoVivo } from "./hooks/useAnaliseAoVivo";
 import { obterUrlReproducao } from "./services/videoPlaybackService";
 import { gerarEventosRevisaveis, aplicarEventosConfirmados } from "./lib/iaEventConverter";
 
@@ -50,6 +51,7 @@ const TIPOS_TREINO = ["Técnico", "Tático", "Físico", "Técnico-tático", "Fin
 /* Ações de jogo — divididas por linha/goleiro para o modo rápido */
 const GOL_TIPOS = ["Gol", "Jogada Ensaiada", "Falha", "Gol Contra"];
 const ACOES_LINHA = [
+  { key: "passe", label: "PASSE", icon: Footprints, color: C.text, variants: ["Certo", "Errado"] },
   { key: "positivo", label: "POSITIVO", icon: ThumbsUp, color: C.lime, variants: ["Passe importante", "Jogada individual"] },
   { key: "erro", label: "ERRO", icon: X, color: C.red, variants: ["Simples", "Gerou gol adversário", "Gerou chance perigosa"] },
   { key: "falta", label: "FALTA", icon: AlertCircle, color: C.yellow, variants: ["Cometida", "Sofrida"] },
@@ -154,10 +156,16 @@ function novoScoutJogo(evento) {
     // Cor do uniforme de cada lado nesta partida — escolhida antes da
     // escalação, usada pela IA para saber de quem é cada lance no vídeo.
     coresUniforme: null, // { favor: {label, hex}, contra: {label, hex} }
-    // Um vídeo (e sua análise) por tempo de jogo — chave é o número do
-    // período. Cada valor: { key, enviadoEm, analiseStatus, analiseErro,
-    // eventosIA, analiseIniciadaEm, analiseAtualizadaEm }.
+    // Vídeo por tempo de jogo, dividido em segmentos curtos (a gravação é
+    // cortada automaticamente a cada ~2m30s) — cada segmento sobe e é
+    // analisado sozinho assim que fica pronto, sem esperar o fim do jogo.
+    // Chave é o número do período; cada valor: { segmentos: [{ indice,
+    // key, enviadoEm, analiseStatus, analiseErro, analiseAtualizadaEm }] }
     videosPorPeriodo: {},
+    // Lances que a IA encontrou mas ficaram com confiança baixa/média (ou
+    // um "gol" sem comemoração clara) — esperam revisão manual, mostrados
+    // na tela de revisão quando a partida é finalizada.
+    itensRevisaoPendentes: [],
   };
 }
 
@@ -571,19 +579,25 @@ function SplashScreen({ onFim }) {
   return (
     <div
       onClick={pular}
-      className="w-full mx-auto flex flex-col items-center justify-center"
+      className="flex flex-col items-center justify-center"
       style={{
         background: C.bg,
-        minHeight: 700,
-        maxWidth: 480,
+        // 100dvh (altura "dinâmica" de viewport) preenche a tela inteira em
+        // qualquer celular, inclusive quando a barra de endereço do
+        // navegador esconde/aparece — 100vh sozinho fica curto em vários
+        // Android. Fallback pra 100vh em navegadores muito antigos.
+        height: "100vh",
+        minHeight: "100dvh",
+        width: "100%",
         fontFamily: FONT_BODY,
         opacity: saindo ? 0 : 1,
         transition: "opacity 380ms ease",
+        overflow: "hidden",
       }}
     >
       <style>{`
         @keyframes vps-fade-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes vps-ball-roll { 0% { transform: translateX(-90px) rotate(0deg); } 100% { transform: translateX(90px) rotate(360deg); } }
+        @keyframes vps-ball-roll { 0% { transform: translateX(-70px) rotate(0deg); } 100% { transform: translateX(70px) rotate(360deg); } }
         @keyframes vps-ball-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
       `}</style>
       <div style={{ animation: "vps-fade-up 700ms ease both" }} className="flex flex-col items-center">
@@ -593,8 +607,13 @@ function SplashScreen({ onFim }) {
         <p style={{ fontFamily: FONT_DISPLAY, fontSize: 30, color: C.lime, letterSpacing: 3 }}>VPSCOUTS</p>
         <p style={{ fontSize: 11, color: C.textFaint, letterSpacing: 1 }} className="uppercase mt-1">Plataforma de Scout de Futsal</p>
       </div>
-      <div className="mt-8" style={{ width: 180, height: 18, position: "relative", overflow: "hidden", animation: "vps-fade-up 700ms ease 150ms both" }}>
-        <span style={{ position: "absolute", left: "50%", top: 0, fontSize: 18, animation: "vps-ball-roll 1.4s linear infinite" }}>⚽</span>
+      {/* Faixa de gramado com a bola rolando por cima — 240px de largura
+          contra só 140px de curso (-70 a +70), com a bola centralizada
+          pelo próprio marginLeft, sobra folga de sobra dos dois lados
+          em qualquer ponto da animação: nunca deve cortar. */}
+      <div className="mt-10 relative" style={{ width: 240, height: 34, animation: "vps-fade-up 700ms ease 150ms both" }}>
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 4, height: 10, borderRadius: 5, background: "repeating-linear-gradient(90deg, #2E7D32, #2E7D32 11px, #388E3C 11px, #388E3C 22px)", boxShadow: `0 0 0 1px ${C.line}` }} />
+        <span style={{ position: "absolute", left: "50%", bottom: 6, width: 26, marginLeft: -13, textAlign: "center", fontSize: 22, animation: "vps-ball-roll 1.6s linear infinite" }}>⚽</span>
       </div>
     </div>
   );
@@ -614,6 +633,8 @@ export default function App() {
     gravarSessaoLocal(nova);
   }, []);
   const [splashVisivel, setSplashVisivel] = useState(true);
+  const [modalBackup, setModalBackup] = useState(false);
+  const backupFileInputRef = useRef(null);
   const saveTimer = useRef(null);
   // Guarda o último valor que ESTE dispositivo escreveu, para o efeito de
   // sincronização abaixo não reagir ao próprio eco do Firestore.
@@ -660,6 +681,44 @@ export default function App() {
 
   const nav = (v, p = {}) => { setView(v); setParams(p); };
   const update = useCallback((fn) => setData((prev) => fn(JSON.parse(JSON.stringify(prev)))), []);
+
+  // Backup manual — baixa um arquivo .json com TODOS os dados do app
+  // (escolas, equipes, atletas, jogos, scouts) pro treinador guardar onde
+  // quiser (Drive, e-mail, etc.) e restaurar depois se precisar, mesmo que
+  // algo dê errado no aparelho ou na sincronização.
+  const baixarBackup = () => {
+    try {
+      const conteudo = JSON.stringify(data, null, 2);
+      const blob = new Blob([conteudo], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const dataHora = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `vpscouts-backup-${dataHora}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) { alert("Não foi possível gerar o backup."); }
+  };
+
+  const restaurarBackup = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const importado = JSON.parse(reader.result);
+        if (!importado || typeof importado !== "object") throw new Error("Arquivo inválido.");
+        if (!window.confirm("Isso vai SUBSTITUIR todos os dados atuais do app pelos dados desse arquivo de backup. Essa ação não pode ser desfeita. Continuar?")) return;
+        setData({ ...emptyState(), ...importado });
+        setModalBackup(false);
+        alert("Backup restaurado com sucesso.");
+      } catch (e) {
+        alert("Esse arquivo não parece ser um backup válido do VPScouts.");
+      }
+    };
+    reader.readAsText(file);
+  };
 
   // Tela de saudação: aparece na abertura do app, mesmo offline, mesmo antes
   // de terminar de carregar os dados — e depois se desfaz com fade para a
@@ -724,8 +783,34 @@ export default function App() {
               <p style={{ fontFamily: FONT_DISPLAY, fontSize: 21, color: C.lime, letterSpacing: 2.5, lineHeight: 1 }}>VPSCOUTS</p>
               <p style={{ fontSize: 9, color: C.textFaint, letterSpacing: 1, textTransform: "uppercase" }} className="mt-0.5">{readOnly ? "Área do Aluno" : "Plataforma de Scout de Futsal"}</p>
             </div>
-            <button onClick={() => { setSessao(null); setView("dashboard"); }} style={{ color: C.textMuted }} aria-label="Sair"><LogOut size={18} /></button>
+            <div className="flex items-center gap-3">
+              {!readOnly && (
+                <button onClick={() => setModalBackup(true)} style={{ color: C.textMuted }} aria-label="Backup"><HardDriveDownload size={18} /></button>
+              )}
+              <button onClick={() => { setSessao(null); setView("dashboard"); }} style={{ color: C.textMuted }} aria-label="Sair"><LogOut size={18} /></button>
+            </div>
           </div>
+        )}
+        {modalBackup && (
+          <Modal title="Backup dos dados" onClose={() => setModalBackup(false)}>
+            <div className="flex flex-col gap-3">
+              <p style={{ color: C.textMuted, fontSize: 12 }}>
+                Baixe um arquivo com tudo que está salvo no app (atletas, jogos, scouts) e guarde onde quiser — Drive, e-mail, etc. Se algo der errado no aparelho, você consegue restaurar a partir desse arquivo.
+              </p>
+              <Btn variant="primary" className="w-full" onClick={baixarBackup}><HardDriveDownload size={15} /> Baixar backup agora</Btn>
+              <input
+                ref={backupFileInputRef}
+                type="file"
+                accept="application/json"
+                className="hidden"
+                onChange={(e) => restaurarBackup(e.target.files?.[0])}
+              />
+              <button onClick={() => backupFileInputRef.current?.click()} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs" style={{ background: "transparent", color: C.textMuted, border: `1px solid ${C.line}` }}>
+                <FolderOpen size={13} /> Restaurar a partir de um backup
+              </button>
+              <p style={{ color: C.textFaint, fontSize: 10 }}>Restaurar substitui todos os dados atuais pelos do arquivo escolhido.</p>
+            </div>
+          </Modal>
         )}
         {view === "dashboard" && <Dashboard data={data} nav={nav} meuAtletaId={meuAtletaId} />}
         {!readOnly && view === "estrutura" && <Estrutura data={data} update={update} />}
@@ -1691,6 +1776,11 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
     return () => clearInterval(id);
   }, [scout?.cronometro?.rodando, scout?.cronometro?.inicioEpoch, periodoAtualMinPreGuard]);
 
+  // Hook precisa ficar antes do "return" condicional (regra dos hooks) —
+  // ele mesmo não faz nada se evento/scout ainda não existirem.
+  const atletasParaAnalise = evento ? data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId)) : [];
+  useAnaliseAoVivo({ evento, scout, atletas: atletasParaAnalise, update, uid });
+
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
   const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
@@ -1901,7 +1991,7 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
             ))}
           </div>
           <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">{evento.adversario} (adversário)</p>
-          <div className="grid grid-cols-4 gap-2 mb-4">
+          <div className="grid grid-cols-4 gap-2 mb-2">
             {CORES_UNIFORME.map((c) => (
               <button key={"c" + c.hex} onClick={() => setCorContraSel(c)} disabled={corFavorSel?.hex === c.hex} className="flex flex-col items-center gap-1 py-2 rounded-lg" style={{ background: corContraSel?.hex === c.hex ? C.orangeDim || C.surface2 : C.surface, border: `1.5px solid ${corContraSel?.hex === c.hex ? C.orange : C.line}`, opacity: corFavorSel?.hex === c.hex ? 0.3 : 1 }}>
                 <span style={{ width: 22, height: 22, borderRadius: 999, background: c.hex, border: `1px solid ${C.line}` }} />
@@ -1909,6 +1999,15 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
               </button>
             ))}
           </div>
+          <label className="flex items-center gap-2.5 py-2 px-2.5 rounded-lg mb-4" style={{ background: corContraSel?.label === "Outros" ? `${C.orange}18` : C.surface, border: `1.5px solid ${corContraSel?.label === "Outros" ? C.orange : C.line}` }}>
+            <input
+              type="color"
+              value={corContraSel?.label === "Outros" ? corContraSel.hex : "#888888"}
+              onChange={(e) => setCorContraSel({ label: "Outros", hex: e.target.value })}
+              style={{ width: 26, height: 26, border: "none", background: "none", padding: 0 }}
+            />
+            <span style={{ color: C.text, fontSize: 12 }}>Outros — escolher outra cor</span>
+          </label>
           <Btn variant="primary" className="w-full" disabled={!corFavorSel || !corContraSel} onClick={confirmarCores}>Confirmar cores <ChevronRight size={15} /></Btn>
         </div>
       </div>
@@ -1970,10 +2069,12 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
           C={C}
           partidaId={`${evento.id}_p${scout.periodoAtual}`}
           periodoLabel={periodoAtualObj.label}
-          onVideoEnviado={({ key }) => update((d) => {
+          onSegmentoEnviado={({ indice, key }) => update((d) => {
             const s = d.scouts[evento.id];
             s.videosPorPeriodo = s.videosPorPeriodo || {};
-            s.videosPorPeriodo[scout.periodoAtual] = { key, enviadoEm: Date.now() };
+            const atual = s.videosPorPeriodo[scout.periodoAtual] || { segmentos: [] };
+            atual.segmentos = [...(atual.segmentos || []), { indice, key, enviadoEm: Date.now(), analiseStatus: "idle" }];
+            s.videosPorPeriodo[scout.periodoAtual] = atual;
             return d;
           })}
         />
@@ -1981,9 +2082,10 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
           <div className="flex items-center gap-1.5 flex-wrap mb-4" style={{ marginTop: -8 }}>
             {periodos.map((p) => {
               const v = (scout.videosPorPeriodo || {})[p.numero];
+              const n = (v?.segmentos || []).length;
               return (
-                <span key={p.numero} className="flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: v?.key ? C.limeDim : C.surface, border: `1px solid ${v?.key ? C.lime : C.line}`, fontSize: 10, color: v?.key ? C.lime : C.textFaint }}>
-                  {v?.key ? <CheckCircle2 size={11} /> : <Circle size={11} />} {p.label}
+                <span key={p.numero} className="flex items-center gap-1 px-2 py-1 rounded-full" style={{ background: n > 0 ? C.limeDim : C.surface, border: `1px solid ${n > 0 ? C.lime : C.line}`, fontSize: 10, color: n > 0 ? C.lime : C.textFaint }}>
+                  {n > 0 ? <CheckCircle2 size={11} /> : <Circle size={11} />} {p.label}{n > 0 ? ` (${n})` : ""}
                 </span>
               );
             })}
@@ -2116,8 +2218,9 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
           <Btn className="flex-1" onClick={desfazer}><Undo2 size={15} /> Desfazer</Btn>
           {isUltimoPeriodo ? (
             <Btn variant="primary" className="flex-1" onClick={() => {
-              const temVideoPendente = Object.values(scout.videosPorPeriodo || {}).some((v) => v?.key && !v.confirmadoEm);
-              if (temVideoPendente) nav("revisao-ia", { id: evento.id });
+              const temItensPendentes = (scout.itensRevisaoPendentes || []).length > 0;
+              const temSegmentoProcessando = Object.values(scout.videosPorPeriodo || {}).some((v) => (v.segmentos || []).some((s) => s.analiseStatus === "processando" || s.analiseStatus === "idle"));
+              if (temItensPendentes || temSegmentoProcessando) nav("revisao-ia", { id: evento.id });
               else setEtapa("mvp");
             }}><Check size={15} /> Finalizar jogo</Btn>
           ) : (
@@ -2334,115 +2437,62 @@ function ScoutTreino({ data, update, params, nav }) {
 function RevisaoIA({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const scout = data.scouts[params.id];
+  const atletasSeguro = evento ? data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId)) : [];
+  // Continua (ou retoma) a análise de qualquer segmento que ainda não
+  // tenha terminado quando o treinador chegou nesta tela — mesmo hook
+  // usado durante o jogo ao vivo, agora rodando aqui.
+  useAnaliseAoVivo({ evento, scout, atletas: atletasSeguro, update, uid });
+
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
-  const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  const atletas = atletasSeguro;
   const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
   const videosPorPeriodo = scout.videosPorPeriodo || {};
-  const periodosComVideo = periodos.filter((p) => videosPorPeriodo[p.numero]?.key);
   const cores = scout.coresUniforme;
 
   const [itens, setItens] = useState([]);
   const [confirmando, setConfirmando] = useState(false);
   const [apenasNaoIdentificados, setApenasNaoIdentificados] = useState(false);
-  const [videoAtivo, setVideoAtivo] = useState(periodosComVideo[0]?.numero ?? null);
-  const [videoUrls, setVideoUrls] = useState({});
-  const [erroVideoPorPeriodo, setErroVideoPorPeriodo] = useState({});
+  const [segmentoAtivo, setSegmentoAtivo] = useState(null); // { periodoNumero, indice }
+  const [videoUrls, setVideoUrls] = useState({}); // "p{n}-s{i}" -> url
+  const [erroVideoPorSegmento, setErroVideoPorSegmento] = useState({});
   const videoRefs = useRef({});
-  const iniciadosRef = useRef(new Set());
-  const seedadosRef = useRef(new Set());
+  const carregadosRef = useRef(new Set());
 
-  // Dispara a análise de cada vídeo que ainda não foi analisado (uma vez
-  // por período) assim que a tela de revisão abre.
+  // Junta na lista local qualquer item novo que a análise em segundo
+  // plano tenha jogado em scout.itensRevisaoPendentes — sem sobrescrever
+  // o que o treinador já estiver editando.
   useEffect(() => {
-    periodosComVideo.forEach((p) => {
-      const v = videosPorPeriodo[p.numero];
-      const status = v?.analiseStatus;
-      if ((!status || status === "idle") && !iniciadosRef.current.has(p.numero)) {
-        iniciadosRef.current.add(p.numero);
-        const partidaId = `${evento.id}_p${p.numero}`;
-        update((d) => {
-          const s = d.scouts[evento.id];
-          s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "processando", analiseErro: null, analiseIniciadaEm: Date.now() };
-          return d;
-        });
-        (async () => {
-          try {
-            const service = getAIAnalysisService();
-            const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
-            await service.iniciarAnalise({ partidaId, videoKey: v.key, jogadoresCadastrados, coresUniforme: cores });
-          } catch (e) {
-            update((d) => {
-              const s = d.scouts[evento.id];
-              s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "erro", analiseErro: e.message };
-              return d;
-            });
-          }
-        })();
-      }
+    const pendentesAtuais = scout.itensRevisaoPendentes || [];
+    const novos = pendentesAtuais.filter((it) => !carregadosRef.current.has(it.idTemp));
+    if (novos.length > 0) {
+      novos.forEach((it) => carregadosRef.current.add(it.idTemp));
+      setItens((prev) => [...prev, ...novos].sort((a, b) => (a.periodoNumero - b.periodoNumero) || (a.segmentoIndice - b.segmentoIndice) || (a.timestampSeg - b.timestampSeg)));
+    }
+  }, [scout.itensRevisaoPendentes]);
+
+  const segmentosComVideo = periodos.flatMap((p) => (videosPorPeriodo[p.numero]?.segmentos || []).map((s) => ({ ...s, periodoNumero: p.numero, periodoLabel: p.label })));
+
+  useEffect(() => {
+    if (!segmentoAtivo && segmentosComVideo.length > 0) setSegmentoAtivo({ periodoNumero: segmentosComVideo[0].periodoNumero, indice: segmentosComVideo[0].indice });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segmentosComVideo.length]);
+
+  // Busca a URL de reprodução de cada segmento (uma vez).
+  useEffect(() => {
+    segmentosComVideo.forEach((seg) => {
+      const chave = `p${seg.periodoNumero}-s${seg.indice}`;
+      if (videoUrls[chave] || !seg.key) return;
+      obterUrlReproducao({ partidaId: `${evento.id}_p${seg.periodoNumero}_s${seg.indice}`, videoKey: seg.key })
+        .then(({ url }) => setVideoUrls((prev) => ({ ...prev, [chave]: url })))
+        .catch((e) => setErroVideoPorSegmento((prev) => ({ ...prev, [chave]: e.message })));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Consulta o status de cada período que está processando, em intervalos.
-  useEffect(() => {
-    const pendentes = periodosComVideo.filter((p) => videosPorPeriodo[p.numero]?.analiseStatus === "processando");
-    if (pendentes.length === 0) return undefined;
-    const id = setInterval(async () => {
-      const service = getAIAnalysisService();
-      for (const p of pendentes) {
-        const partidaId = `${evento.id}_p${p.numero}`;
-        try {
-          const st = await service.consultarStatus(partidaId);
-          if (st.status === "concluido") {
-            update((d) => {
-              const s = d.scouts[evento.id];
-              s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "concluido", eventosIA: st.eventos || [], analiseAtualizadaEm: Date.now() };
-              return d;
-            });
-          } else if (st.status === "erro") {
-            update((d) => {
-              const s = d.scouts[evento.id];
-              s.videosPorPeriodo[p.numero] = { ...s.videosPorPeriodo[p.numero], analiseStatus: "erro", analiseErro: st.erro, analiseAtualizadaEm: Date.now() };
-              return d;
-            });
-          }
-        } catch (e) { /* tenta de novo no próximo tick */ }
-      }
-    }, 6000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periodosComVideo.map((p) => videosPorPeriodo[p.numero]?.analiseStatus).join(",")]);
-
-  // Assim que um período fica "concluído", junta os eventos dele na lista
-  // de revisão (só uma vez por período, pra não sobrescrever edições que
-  // o treinador já tiver feito manualmente nesse meio-tempo).
-  useEffect(() => {
-    periodosComVideo.forEach((p) => {
-      const v = videosPorPeriodo[p.numero];
-      if (v?.analiseStatus === "concluido" && !seedadosRef.current.has(p.numero)) {
-        seedadosRef.current.add(p.numero);
-        const novos = gerarEventosRevisaveis(v.eventosIA, atletas, p.numero);
-        setItens((prev) => [...prev, ...novos].sort((a, b) => (a.periodoNumero - b.periodoNumero) || (a.timestampSeg - b.timestampSeg)));
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periodosComVideo.map((p) => videosPorPeriodo[p.numero]?.analiseStatus).join(",")]);
-
-  // Busca a URL de reprodução de cada vídeo (uma vez por período).
-  useEffect(() => {
-    periodosComVideo.forEach((p) => {
-      if (videoUrls[p.numero]) return;
-      obterUrlReproducao({ partidaId: `${evento.id}_p${p.numero}`, videoKey: videosPorPeriodo[p.numero].key })
-        .then(({ url }) => setVideoUrls((prev) => ({ ...prev, [p.numero]: url })))
-        .catch((e) => setErroVideoPorPeriodo((prev) => ({ ...prev, [p.numero]: e.message })));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periodosComVideo.length]);
+  }, [segmentosComVideo.length]);
 
   const verLance = (it) => {
-    setVideoAtivo(it.periodoNumero);
+    setSegmentoAtivo({ periodoNumero: it.periodoNumero, indice: it.segmentoIndice });
     setTimeout(() => {
-      const el = videoRefs.current[it.periodoNumero];
+      const el = videoRefs.current[`p${it.periodoNumero}-s${it.segmentoIndice}`];
       if (!el) return;
       el.currentTime = Math.max(0, it.timestampSeg - 2);
       el.play();
@@ -2457,42 +2507,31 @@ function RevisaoIA({ data, update, params, nav }) {
   const mmss = (seg) => `${String(Math.floor(seg / 60)).padStart(2, "0")}:${String(Math.floor(seg % 60)).padStart(2, "0")}`;
 
   const aptos = itens.filter((it) => !it.excluido && it.confirmado);
-  const semJogador = aptos.filter((it) => it.tipo === "finalizacao" ? (it.lado === "pro" && !it.atletaId) : !it.atletaId).length;
-  const aplicaveis = aptos.length - semJogador;
-  const totalNaoIdentificados = itens.filter((it) => !it.excluido && (it.tipo === "passe" ? !it.atletaId : (it.lado === "pro" && !it.atletaId))).length;
-  const itensExibidos = apenasNaoIdentificados ? itens.filter((it) => (it.tipo === "passe" ? !it.atletaId : (it.lado === "pro" && !it.atletaId))) : itens;
+  const foraIdentificado = (it) => (it.lado === "pro" ? !it.atletaId : false);
+  const semJogador = aptos.filter(foraIdentificado).length;
+  const totalNaoIdentificados = itens.filter((it) => !it.excluido && foraIdentificado(it)).length;
+  const itensExibidos = apenasNaoIdentificados ? itens.filter((it) => !it.excluido && foraIdentificado(it)) : itens;
 
-  const eventosIATotal = periodosComVideo.flatMap((p) => videosPorPeriodo[p.numero]?.eventosIA || []);
-  const manuais = scout.eventosScout.filter((e) => e.fonte !== "ia");
-  const comparacao = [
-    { label: "Gols", manual: manuais.filter((e) => e.acao === "gol").length, ia: itens.filter((it) => it.tipo === "finalizacao" && it.resultado === "gol" && it.lado === "pro").length },
-    { label: "Finalizações a favor", manual: manuais.filter((e) => e.acao === "finalizacao_time" && (e.lado || "pro") === "pro").length, ia: eventosIATotal.filter((e) => e.tipo === "finalizacao" && (e.lado || "pro") === "pro").length },
-    { label: "Finalizações contra", manual: manuais.filter((e) => e.acao === "finalizacao_time" && e.lado === "contra").length, ia: eventosIATotal.filter((e) => e.tipo === "finalizacao" && e.lado === "contra").length },
-    { label: "Passes", manual: manuais.filter((e) => e.acao === "passe").length, ia: eventosIATotal.filter((e) => e.tipo === "passe").length },
-  ];
-
-  const todosConcluidosOuErro = periodosComVideo.every((p) => ["concluido", "erro"].includes(videosPorPeriodo[p.numero]?.analiseStatus));
-  const algumProcessando = periodosComVideo.some((p) => videosPorPeriodo[p.numero]?.analiseStatus === "processando");
+  const segmentosProcessando = segmentosComVideo.filter((s) => s.analiseStatus === "processando" || s.analiseStatus === "idle");
+  const jaAplicadosAutomaticamente = scout.eventosScout.filter((e) => e.fonte === "ia").length;
 
   const confirmarAnalise = () => {
     setConfirmando(true);
     update((d) => {
       const s = d.scouts[evento.id];
-      const n = aplicarEventosConfirmados(s, itens, uid);
-      periodosComVideo.forEach((p) => {
-        if (s.videosPorPeriodo[p.numero]) s.videosPorPeriodo[p.numero].confirmadoEm = Date.now();
-      });
-      s.eventosConfirmadosCountIA = n;
+      aplicarEventosConfirmados(s, itens, uid);
+      const idsProcessados = new Set(itens.map((it) => it.idTemp));
+      s.itensRevisaoPendentes = (s.itensRevisaoPendentes || []).filter((it) => !idsProcessados.has(it.idTemp));
       return d;
     });
     nav("scout-jogo", { id: evento.id, forcarEtapa: "mvp" });
   };
 
-  const pularRevisao = () => nav("scout-jogo", { id: evento.id, forcarEtapa: "mvp" });
+  const continuarSemRevisar = () => nav("scout-jogo", { id: evento.id, forcarEtapa: "mvp" });
 
   return (
     <div>
-      <ScreenHeader title="Revisar jogo" onBack={() => nav("scout-jogo", { id: evento.id })} subtitle={`${periodosComVideo.length} vídeo(s) · ${itens.length} evento(s) encontrados`} />
+      <ScreenHeader title="Revisar jogo" onBack={() => nav("scout-jogo", { id: evento.id })} subtitle={`${jaAplicadosAutomaticamente} evento(s) já aplicado(s) automaticamente`} />
       <div className="px-5 pb-24">
         {cores && (
           <div className="flex items-center gap-3 mb-3 text-xs" style={{ color: C.textMuted }}>
@@ -2501,76 +2540,76 @@ function RevisaoIA({ data, update, params, nav }) {
           </div>
         )}
 
-        {periodosComVideo.length === 0 ? (
+        <div className="rounded-xl p-3 mb-3" style={{ background: C.limeDim, border: `1px solid ${C.lime}` }}>
+          <p style={{ color: C.lime, fontSize: 12 }}>
+            A análise já rodou sozinha durante o jogo — {jaAplicadosAutomaticamente} lance(s) de alta confiança já entraram direto nas estatísticas. Abaixo está só o que ficou incerto (ou gol sem comemoração clara) pra você confirmar.
+          </p>
+        </div>
+
+        {segmentosComVideo.length === 0 ? (
           <EmptyHint text="Nenhum vídeo foi gravado nesta partida." />
         ) : (
           <>
-            <div className="flex gap-1.5 mb-3">
-              {periodosComVideo.map((p) => {
-                const st = videosPorPeriodo[p.numero]?.analiseStatus;
+            <div className="flex gap-1.5 mb-3 flex-wrap">
+              {segmentosComVideo.map((seg) => {
+                const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
                 return (
-                  <button key={p.numero} onClick={() => setVideoAtivo(p.numero)} className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: videoAtivo === p.numero ? C.limeDim : C.surface, border: `1px solid ${videoAtivo === p.numero ? C.lime : C.line}`, color: videoAtivo === p.numero ? C.lime : C.textMuted }}>
-                    {st === "processando" && <Loader2 size={12} className="animate-spin" />}
-                    {st === "concluido" && <CheckCircle2 size={12} />}
-                    {st === "erro" && <AlertTriangle size={12} color={C.red} />}
-                    {p.label}
+                  <button key={`p${seg.periodoNumero}-s${seg.indice}`} onClick={() => setSegmentoAtivo({ periodoNumero: seg.periodoNumero, indice: seg.indice })} className="py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: ativo ? C.limeDim : C.surface, border: `1px solid ${ativo ? C.lime : C.line}`, color: ativo ? C.lime : C.textMuted }}>
+                    {seg.analiseStatus === "processando" && <Loader2 size={12} className="animate-spin" />}
+                    {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} />}
+                    {seg.analiseStatus === "erro" && <AlertTriangle size={12} color={C.red} />}
+                    {seg.periodoLabel} · trecho {seg.indice + 1}
                   </button>
                 );
               })}
             </div>
 
-            {periodosComVideo.map((p) => (
-              <div key={p.numero} className="rounded-xl overflow-hidden mb-3" style={{ background: "#000", border: `1px solid ${C.line}`, display: videoAtivo === p.numero ? "block" : "none" }}>
-                {erroVideoPorPeriodo[p.numero] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorPeriodo[p.numero]}</p>}
-                {!erroVideoPorPeriodo[p.numero] && !videoUrls[p.numero] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
-                {videoUrls[p.numero] && (
-                  <video ref={(el) => { videoRefs.current[p.numero] = el; }} src={videoUrls[p.numero]} controls preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
-                )}
-              </div>
-            ))}
+            {segmentosComVideo.map((seg) => {
+              const chave = `p${seg.periodoNumero}-s${seg.indice}`;
+              const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
+              return (
+                <div key={chave} className="rounded-xl overflow-hidden mb-3" style={{ background: "#000", border: `1px solid ${C.line}`, display: ativo ? "block" : "none" }}>
+                  {erroVideoPorSegmento[chave] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorSegmento[chave]}</p>}
+                  {!erroVideoPorSegmento[chave] && !videoUrls[chave] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
+                  {videoUrls[chave] && (
+                    <video ref={(el) => { videoRefs.current[chave] = el; }} src={videoUrls[chave]} controls preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
+                  )}
+                </div>
+              );
+            })}
 
-            {algumProcessando && (
+            {segmentosProcessando.length > 0 && (
               <div className="rounded-xl p-4 mb-3 flex flex-col items-center gap-1.5" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
                 <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
-                  <Loader2 size={14} className="animate-spin" /> Analisando vídeo(s) — isso pode levar alguns minutos…
+                  <Loader2 size={14} className="animate-spin" /> Terminando de analisar {segmentosProcessando.length} trecho(s)…
                 </div>
-                <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>Pode continuar depois — o progresso fica salvo.</span>
+                <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>Pode aguardar aqui — os resultados aparecem sozinhos assim que ficarem prontos.</span>
               </div>
             )}
 
-            {itens.length === 0 && todosConcluidosOuErro ? (
-              <EmptyHint text="Nenhum evento foi encontrado pela análise." />
+            {itens.length === 0 && segmentosProcessando.length === 0 ? (
+              <EmptyHint text="Nada ficou pendente — tudo que a IA encontrou já foi aplicado automaticamente." />
             ) : itens.length > 0 && (
               <>
-                <Card>
-                  <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">Scout manual × IA (nesta partida)</p>
-                  {comparacao.map((c) => (
-                    <div key={c.label} className="flex items-center justify-between" style={{ fontSize: 12, color: C.textMuted, padding: "3px 0" }}>
-                      <span>{c.label}</span>
-                      <span style={{ color: C.text }}>{c.manual} <span style={{ color: C.textFaint }}>manual</span> · {c.ia} <span style={{ color: C.textFaint }}>IA</span></span>
-                    </div>
-                  ))}
-                </Card>
-
                 {totalNaoIdentificados > 0 && (
                   <button
                     onClick={() => setApenasNaoIdentificados((v) => !v)}
-                    className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs mt-2"
+                    className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs mb-3"
                     style={{ background: apenasNaoIdentificados ? `${C.orange}22` : C.surface2, color: C.orange, border: `1px solid ${C.orange}` }}
                   >
                     <AlertTriangle size={13} /> {apenasNaoIdentificados ? "Mostrando só não identificados" : `Mostrar só não identificados (${totalNaoIdentificados})`}
                   </button>
                 )}
 
-                <div className="flex flex-col gap-2 mt-3">
+                <div className="flex flex-col gap-2">
                   {itensExibidos.map((it) => (
                     <div key={it.idTemp} className="rounded-xl p-3" style={{ background: it.excluido ? "transparent" : C.surface2, border: `1px solid ${C.line}`, opacity: it.excluido ? 0.45 : 1 }}>
                       <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2">
-                          <span style={{ color: C.textFaint, fontSize: 10 }}>{periodos.find((p) => p.numero === it.periodoNumero)?.label}</span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span style={{ color: C.textFaint, fontSize: 10 }}>{periodos.find((p) => p.numero === it.periodoNumero)?.label} · trecho {it.segmentoIndice + 1}</span>
                           <span style={{ color: C.textFaint, fontSize: 11, fontVariantNumeric: "tabular-nums" }}>{mmss(it.timestampSeg)}</span>
                           <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>{labelTipo(it.tipo)}</span>
-                          {videoUrls[it.periodoNumero] && !it.excluido && (
+                          {videoUrls[`p${it.periodoNumero}-s${it.segmentoIndice}`] && !it.excluido && (
                             <button onClick={() => verLance(it)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 10 }}>
                               <Play size={11} fill={C.lime} /> Ver lance
                             </button>
@@ -2583,14 +2622,15 @@ function RevisaoIA({ data, update, params, nav }) {
 
                       {!it.excluido && (
                         <div className="flex flex-col gap-1.5">
-                          {it.tipo === "finalizacao" && (
-                            <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
-                              <button onClick={() => atualizarItem(it.idTemp, { lado: "pro" })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "pro" ? C.limeDim : "transparent", color: it.lado === "pro" ? C.lime : C.textMuted }}>A favor</button>
-                              <button onClick={() => atualizarItem(it.idTemp, { lado: "contra", atletaId: null })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "contra" ? `${C.orange}22` : "transparent", color: it.lado === "contra" ? C.orange : C.textMuted }}>Contra (adversário)</button>
-                            </div>
+                          {it.resultado === "gol" && it.tipo === "finalizacao" && (
+                            <p style={{ color: C.orange, fontSize: 10 }}>⚠️ Marcado como gol, mas sem comemoração clara — confirme com atenção antes de aceitar.</p>
                           )}
+                          <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+                            <button onClick={() => atualizarItem(it.idTemp, { lado: "pro" })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "pro" ? C.limeDim : "transparent", color: it.lado === "pro" ? C.lime : C.textMuted }}>A favor</button>
+                            <button onClick={() => atualizarItem(it.idTemp, { lado: "contra", atletaId: null, destinoId: null })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "contra" ? `${C.orange}22` : "transparent", color: it.lado === "contra" ? C.orange : C.textMuted }}>Contra (adversário)</button>
+                          </div>
 
-                          {(it.tipo === "passe" || it.lado === "pro") && (
+                          {it.lado === "pro" && (
                             <div className="flex items-center gap-2">
                               <select value={it.atletaId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { atletaId: a?.id || null, atletaNumero: a?.numero ?? null, atletaNome: a?.nome || null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.atletaId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
                                 <option value="">{it.atletaNumero != null ? `#${it.atletaNumero} não identificado` : "Não identificado"}</option>
@@ -2612,11 +2652,12 @@ function RevisaoIA({ data, update, params, nav }) {
                             </select>
                           )}
                           {it.tipo === "finalizacao" && (
-                            <select value={it.resultado || "no_alvo"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
+                            <select value={it.resultado || "fora"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
                               <option value="gol">Gol</option>
-                              <option value="no_alvo">No alvo</option>
-                              <option value="bloqueada">Bloqueada</option>
-                              <option value="fora">Fora</option>
+                              <option value="defendida">Defesa do goleiro</option>
+                              <option value="trave">Trave</option>
+                              <option value="nova_jogada">Nova jogada (rebote)</option>
+                              <option value="fora">Pra fora</option>
                             </select>
                           )}
 
@@ -2646,13 +2687,78 @@ function RevisaoIA({ data, update, params, nav }) {
         {semJogador > 0 && <p style={{ color: C.orange, fontSize: 10 }} className="text-center mb-1.5">{semJogador} evento(s) confirmado(s) sem jogador identificado não entrarão nas estatísticas individuais.</p>}
         {itens.length > 0 ? (
           <Btn variant="primary" className="w-full" onClick={confirmarAnalise} disabled={confirmando}>
-            <Check size={16} /> Confirmar análise ({aplicaveis} evento{aplicaveis === 1 ? "" : "s"})
+            <Check size={16} /> Confirmar revisão ({aptos.length} evento{aptos.length === 1 ? "" : "s"})
           </Btn>
         ) : (
-          <Btn className="w-full" onClick={pularRevisao}>Continuar sem eventos de IA <ChevronRight size={15} /></Btn>
+          <Btn className="w-full" onClick={continuarSemRevisar} disabled={segmentosProcessando.length > 0}>
+            {segmentosProcessando.length > 0 ? "Aguardando análise…" : <>Continuar <ChevronRight size={15} /></>}
+          </Btn>
         )}
       </div>
     </div>
+  );
+}
+
+// Melhores momentos — replay dos gols direto no relatório, pulando pro
+// segundo exato do vídeo (quando o lance veio da análise por IA e temos
+// o timestamp guardado). Some sozinho se a partida não teve vídeo.
+function MelhoresMomentos({ C, evento, scout, periodos }) {
+  const [urls, setUrls] = useState({});
+  const [abertoId, setAbertoId] = useState(null);
+  const [carregandoId, setCarregandoId] = useState(null);
+
+  const lances = scout.eventosScout.filter((e) => (e.acao === "gol" || e.acao === "gol_adv") && e.timestampSeg != null && e.segmentoIndice != null);
+
+  if (lances.length === 0) return null;
+
+  const labelPeriodo = (n) => periodos.find((p) => p.numero === n)?.label || `${n}º Tempo`;
+
+  const abrirLance = async (ev) => {
+    const chave = `p${ev.periodoNumero}-s${ev.segmentoIndice}`;
+    if (abertoId === ev.id) { setAbertoId(null); return; }
+    if (!urls[chave]) {
+      const seg = (scout.videosPorPeriodo?.[ev.periodoNumero]?.segmentos || []).find((s) => s.indice === ev.segmentoIndice);
+      if (!seg?.key) return;
+      setCarregandoId(ev.id);
+      try {
+        const { url } = await obterUrlReproducao({ partidaId: `${evento.id}_p${ev.periodoNumero}_s${ev.segmentoIndice}`, videoKey: seg.key });
+        setUrls((prev) => ({ ...prev, [chave]: url }));
+      } catch (e) { setCarregandoId(null); return; }
+      setCarregandoId(null);
+    }
+    setAbertoId(ev.id);
+  };
+
+  return (
+    <>
+      <CourtLine label="Melhores Momentos" />
+      <div className="flex flex-col gap-2 mb-2">
+        {lances.map((ev) => {
+          const chave = `p${ev.periodoNumero}-s${ev.segmentoIndice}`;
+          return (
+            <div key={ev.id} className="rounded-xl p-3" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+              <div className="flex items-center justify-between">
+                <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>
+                  {ev.acao === "gol" ? "⚽ Gol a favor" : "🥅 Gol adversário"} — {labelPeriodo(ev.periodoNumero)}
+                </span>
+                <button onClick={() => abrirLance(ev)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 11 }}>
+                  {carregandoId === ev.id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} fill={C.lime} />} {abertoId === ev.id ? "Fechar" : "Assistir"}
+                </button>
+              </div>
+              {abertoId === ev.id && urls[chave] && (
+                <video
+                  src={`${urls[chave]}#t=${Math.max(0, ev.timestampSeg - 2)}`}
+                  controls
+                  autoPlay
+                  className="w-full rounded-lg mt-2"
+                  style={{ maxHeight: 200 }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -2707,6 +2813,8 @@ function RelatorioJogo({ data, params, nav }) {
           {mvp && <p style={{ color: C.lime, fontSize: 12 }} className="mt-1">🏆 MVP: {mvp.numero} · {mvp.nome}</p>}
         </Card>
 
+        <MelhoresMomentos C={C} evento={evento} scout={scout} periodos={periodos} />
+
         <CourtLine label="Comparação por período" />
         <table className="w-full text-xs" style={{ color: C.text }}>
           <thead><tr style={{ color: C.textFaint }}><td>Estatística</td>{periodos.map((p) => <td key={p.numero} className="text-center">{p.label.replace(/º.*/, "º")}</td>)}</tr></thead>
@@ -2748,6 +2856,36 @@ function RelatorioJogo({ data, params, nav }) {
             </div>
           </div>
         ))}
+
+        <CourtLine label="Passes da Equipe (total da partida)" />
+        {["pro", "contra"].map((lado) => {
+          const certos = lado === "pro"
+            ? scout.eventosScout.filter((e) => e.acao === "passe" && e.variante === "Certo").length
+            : scout.eventosScout.filter((e) => e.acao === "passe_time" && e.lado === "contra" && e.variante === "Certo").length;
+          const errados = lado === "pro"
+            ? scout.eventosScout.filter((e) => e.acao === "passe" && e.variante === "Errado").length
+            : scout.eventosScout.filter((e) => e.acao === "passe_time" && e.lado === "contra" && e.variante === "Errado").length;
+          const total = certos + errados;
+          return (
+            <div key={lado} className="mb-2">
+              <p style={{ color: lado === "pro" ? C.lime : C.orange, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }} className="mb-1 font-bold">{lado === "pro" ? "A favor" : "Contra"}</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                <div className="rounded-lg py-2.5 flex flex-col items-center gap-1" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                  <span style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: C.lime }}>{certos}</span>
+                  <span style={{ fontSize: 8, color: C.textMuted }}>Certos</span>
+                </div>
+                <div className="rounded-lg py-2.5 flex flex-col items-center gap-1" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                  <span style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: C.red }}>{errados}</span>
+                  <span style={{ fontSize: 8, color: C.textMuted }}>Errados</span>
+                </div>
+                <div className="rounded-lg py-2.5 flex flex-col items-center gap-1" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                  <span style={{ fontFamily: FONT_DISPLAY, fontSize: 16, color: C.text }}>{total > 0 ? `${Math.round((certos / total) * 100)}%` : "—"}</span>
+                  <span style={{ fontSize: 8, color: C.textMuted }}>Precisão</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
 
         <CourtLine label="Minutagem em quadra" />
         <div className="flex flex-col gap-1.5">
@@ -3059,4 +3197,4 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
       )}
     </div>
   );
-    }
+                                                                                                   }
