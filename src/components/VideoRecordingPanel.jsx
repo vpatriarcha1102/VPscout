@@ -15,6 +15,29 @@ function formatMMSS(totalSeg) {
   return `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
+function AguardandoPermissao({ C }) {
+  const [tempoPreso, setTempoPreso] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTempoPreso((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <p className="text-center text-xs" style={{ color: C.textMuted }}>Aguardando permissão de câmera/microfone…</p>
+      {tempoPreso >= 10 && (
+        <div className="flex flex-col items-center gap-2 mt-1">
+          <p className="text-center text-xs" style={{ color: C.orange }}>
+            Demorando muito? Confira se o Chrome não bloqueou a câmera pra este site (toque no ícone de cadeado/informações ao lado do endereço → Permissões → Câmera e Microfone → Permitir).
+          </p>
+          <button onClick={() => window.location.reload()} className="text-xs underline" style={{ color: C.textMuted }}>
+            Recarregar o app
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnviado }) {
   const rec = useVideoRecorder();
   const [mostrarDicas, setMostrarDicas] = useState(false);
@@ -166,9 +189,7 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
         </div>
       )}
 
-      {rec.status === "pedindo_permissao" && (
-        <p className="text-center text-xs" style={{ color: C.textMuted }}>Aguardando permissão de câmera/microfone…</p>
-      )}
+      {rec.status === "pedindo_permissao" && <AguardandoPermissao C={C} />}
 
       {(rec.status === "gravando" || (rec.status === "finalizado" && modoRef.current === "rotacionando")) && (
         <div className="flex flex-col items-center gap-3">
