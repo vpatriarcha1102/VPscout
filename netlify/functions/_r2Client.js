@@ -79,7 +79,7 @@ export function verificarToken(event) {
   const recebido = event.headers?.["x-vpscouts-token"] || event.headers?.["X-VPScouts-Token"];
   if (recebido !== esperado) {
     console.warn("[verificarToken] token de app ausente ou inválido.");
-    return jsonResponse(401, { erro: "Não autorizado." });
+    return jsonResponse(401, { erro: "Não autorizado — o token de app (APP_SHARED_TOKEN no servidor) não bate com o do site (VITE_APP_SHARED_TOKEN). Confira se os dois têm exatamente o mesmo valor nas variáveis de ambiente do Netlify." });
   }
   return null;
 }
