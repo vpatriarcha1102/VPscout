@@ -233,8 +233,12 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
           )}
 
           {algumErro && (
-            <div className="flex items-center gap-1.5" style={{ color: C.red, fontSize: 12, textAlign: "center" }}>
-              <AlertTriangle size={14} /> Um ou mais trechos falharam ao enviar. Tente regravar essa parte.
+            <div className="flex flex-col items-center gap-1 px-2" style={{ color: C.red, fontSize: 12, textAlign: "center" }}>
+              <span className="flex items-center gap-1.5"><AlertTriangle size={14} /> Um ou mais trechos falharam ao enviar.</span>
+              {segmentos.filter((s) => s.status === "erro" && s.erro).map((s) => (
+                <span key={s.indice} style={{ fontSize: 10, color: C.textMuted, fontFamily: "monospace" }}>trecho {s.indice + 1}: {s.erro}</span>
+              ))}
+              <span style={{ fontSize: 10 }}>Tente regravar essa parte.</span>
             </div>
           )}
 
