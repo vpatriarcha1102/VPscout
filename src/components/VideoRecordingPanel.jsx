@@ -38,13 +38,17 @@ function AguardandoPermissao({ C }) {
   );
 }
 
-export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnviado }) {
+export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado }) {
   const rec = useVideoRecorder();
   const [mostrarDicas, setMostrarDicas] = useState(false);
   const [segmentos, setSegmentos] = useState([]); // [{ indice, status, progresso, erro }]
   const fileInputRef = useRef(null);
   const modoRef = useRef("parado"); // "gravando" | "rotacionando" | "finalizando" | "parado"
-  const proximoIndiceRef = useRef(0);
+  // Começa do número de trechos que JÁ existem pra este período (persistido
+  // no scout) — nunca reinicia em 0 ao regravar, senão um novo trecho
+  // "trecho 1" colide com um trecho 1 anterior e a análise se confunde
+  // entre os dois vídeos diferentes.
+  const proximoIndiceRef = useRef(indiceInicial);
   const cronometroTotalRef = useRef(0); // soma dos segmentos já concluídos, pro relógio não voltar a 00:00
 
   const enviarSegmento = (blob, indice) => {
@@ -102,7 +106,6 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
   }, [rec.status, rec.videoBlob]);
 
   const iniciarGravacao = () => {
-    proximoIndiceRef.current = 0;
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "gravando";
@@ -115,7 +118,6 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
   };
 
   const importarDaGaleria = (file) => {
-    proximoIndiceRef.current = 0;
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "finalizando";
@@ -123,7 +125,6 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
   };
 
   const regravar = () => {
-    proximoIndiceRef.current = 0;
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "parado";
