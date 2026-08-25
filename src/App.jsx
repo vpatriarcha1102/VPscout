@@ -59,6 +59,8 @@ const ACOES_LINHA = [
 ];
 const ACOES_GOLEIRO = [
   { key: "defesa", label: "DEFESA", icon: Hand, color: C.blue },
+  { key: "gol", label: "GOL", icon: Target, color: C.lime },
+  { key: "assistencia", label: "ASSISTÊNCIA", icon: Zap, color: C.lime },
   { key: "erro", label: "ERRO", icon: X, color: C.red, variants: ["Simples", "Gerou gol adversário", "Gerou chance perigosa"] },
   { key: "falta", label: "FALTA", icon: AlertCircle, color: C.yellow, variants: ["Cometida", "Sofrida"] },
   { key: "cartao", label: "CARTÃO", emoji: "🟨", color: C.yellow, variants: ["Amarelo", "Vermelho"] },
@@ -513,6 +515,8 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
     ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
     ...(isGoleiro ? [["Defesas", stats.defesas]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
+    ["Precisão de passes", stats.precisaoPasses != null ? `${stats.precisaoPasses}%` : "—"],
+    ["Precisão de finalizações", stats.precisaoFinalizacoes != null ? `${stats.precisaoFinalizacoes}%` : "—"],
     ["Faltas cometidas", stats.faltasCometidas], ["Faltas sofridas", stats.faltasSofridas],
     ["Nota média", stats.mediaNota != null ? stats.mediaNota.toFixed(1) : "—"],
   ];
@@ -532,7 +536,7 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
           {linhas.map(([label, val]) => (
             <div key={label} className="rounded-lg p-3 flex items-center justify-between" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
               <span style={{ color: C.textMuted, fontSize: 12 }}>{label}</span>
-              <span style={{ color: C.text, fontFamily: FONT_DISPLAY, fontSize: 20 }}>{val}</span>
+              <span style={{ color: (label === "Gols" || label === "Defesas") ? C.lime : C.text, fontFamily: FONT_DISPLAY, fontSize: 20 }}>{val}</span>
             </div>
           ))}
         </div>
@@ -679,7 +683,36 @@ export default function App() {
     return () => { if (typeof unsubscribe === "function") unsubscribe(); };
   }, [loaded]);
 
-  const nav = (v, p = {}) => { setView(v); setParams(p); };
+  // Botão/gesto de voltar do celular (seta física no Android, gesto de
+  // borda no iPhone) navega DENTRO do app em vez de fechar — usamos o
+  // histórico do próprio navegador pra isso, que é quem intercepta esse
+  // gesto nos dois sistemas.
+  const navEmCursoRef = useRef(false); // evita loop quando a mudança já veio do popstate
+  const nav = (v, p = {}) => {
+    setView(v);
+    setParams(p);
+    if (!navEmCursoRef.current) {
+      try { window.history.pushState({ vpscoutsView: v, vpscoutsParams: p }, ""); } catch (e) { /* ambiente sem history */ }
+    }
+  };
+  useEffect(() => {
+    const aoVoltar = (event) => {
+      const estado = event.state;
+      if (estado && estado.vpscoutsView) {
+        navEmCursoRef.current = true;
+        setView(estado.vpscoutsView);
+        setParams(estado.vpscoutsParams || {});
+        navEmCursoRef.current = false;
+      }
+      // Sem estado = chegou no início do histórico do app — aí sim o
+      // gesto de voltar sai do app normalmente, como esperado.
+    };
+    window.addEventListener("popstate", aoVoltar);
+    try { window.history.replaceState({ vpscoutsView: view, vpscoutsParams: params }, ""); } catch (e) { /* ambiente sem history */ }
+    return () => window.removeEventListener("popstate", aoVoltar);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const update = useCallback((fn) => setData((prev) => fn(JSON.parse(JSON.stringify(prev)))), []);
 
   // Backup manual — baixa um arquivo .json com TODOS os dados do app
@@ -822,7 +855,7 @@ export default function App() {
         {!readOnly && view === "scout-jogo" && <ScoutJogo data={data} update={update} params={params} nav={nav} />}
         {!readOnly && view === "revisao-ia" && <RevisaoIA data={data} update={update} params={params} nav={nav} />}
         {!readOnly && view === "scout-treino" && <ScoutTreino data={data} update={update} params={params} nav={nav} />}
-        {view === "relatorio-jogo" && <RelatorioJogo data={data} params={params} nav={nav} />}
+        {view === "relatorio-jogo" && <RelatorioJogo data={data} update={update} params={params} nav={nav} readOnly={readOnly} />}
         {view === "relatorio-treino" && <RelatorioTreino data={data} params={params} nav={nav} />}
         {view === "rankings" && <RankingsScreen data={data} />}
         {view === "estatisticas" && <EstatisticasScreen data={data} update={update} nav={nav} readOnly={readOnly} />}
@@ -1391,7 +1424,7 @@ function Atletas({ data, update, nav }) {
    PERFIL DO ATLETA
    ============================================================ */
 function agregarEstatisticasAtleta(data, atletaId) {
-  const stats = { jogos: new Set(), treinos: new Set(), gols: 0, assistencias: 0, erros: 0, positivos: 0, faltasCometidas: 0, faltasSofridas: 0, defesas: 0, notas: [], minutagemTotal: 0, jogosComMinutagem: 0 };
+  const stats = { jogos: new Set(), treinos: new Set(), gols: 0, assistencias: 0, erros: 0, positivos: 0, faltasCometidas: 0, faltasSofridas: 0, defesas: 0, notas: [], minutagemTotal: 0, jogosComMinutagem: 0, passesCertos: 0, passesErrados: 0, finalizacoesTotais: 0, finalizacoesGol: 0 };
   Object.entries(data.scouts).forEach(([eventoId, scout]) => {
     const evento = data.eventos.find((e) => e.id === eventoId);
     if (!evento) return;
@@ -1406,6 +1439,9 @@ function agregarEstatisticasAtleta(data, atletaId) {
         if (ev.acao === "positivo") stats.positivos++;
         if (ev.acao === "falta") ev.variante === "Cometida" ? stats.faltasCometidas++ : stats.faltasSofridas++;
         if (ev.acao === "defesa") stats.defesas++;
+        if (ev.acao === "passe" && ev.variante === "Certo") stats.passesCertos++;
+        if (ev.acao === "passe" && ev.variante === "Errado") stats.passesErrados++;
+        if (ev.acao === "finalizacao_jogador") { stats.finalizacoesTotais++; if (ev.variante === "Gol") stats.finalizacoesGol++; }
       });
       if (minutagemAtletaObj && minutagemAtletaObj.segundosTotais > 0) {
         stats.minutagemTotal += minutagemAtletaObj.segundosTotais;
@@ -1418,7 +1454,10 @@ function agregarEstatisticasAtleta(data, atletaId) {
   });
   const mediaNota = stats.notas.length ? stats.notas.reduce((a, b) => a + b, 0) / stats.notas.length : null;
   const minutagemMedia = stats.jogosComMinutagem ? stats.minutagemTotal / stats.jogosComMinutagem : 0;
-  return { ...stats, jogos: stats.jogos.size, treinos: stats.treinos.size, mediaNota, minutagemMedia };
+  const totalPasses = stats.passesCertos + stats.passesErrados;
+  const precisaoPasses = totalPasses > 0 ? Math.round((stats.passesCertos / totalPasses) * 100) : null;
+  const precisaoFinalizacoes = stats.finalizacoesTotais > 0 ? Math.round((stats.finalizacoesGol / stats.finalizacoesTotais) * 100) : null;
+  return { ...stats, jogos: stats.jogos.size, treinos: stats.treinos.size, mediaNota, minutagemMedia, precisaoPasses, precisaoFinalizacoes };
 }
 
 function AtletaPerfil({ data, update, params, nav, readOnly }) {
@@ -1441,6 +1480,8 @@ function AtletaPerfil({ data, update, params, nav, readOnly }) {
     ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
     ...(isGoleiro ? [["Defesas", stats.defesas]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
+    ["Precisão de passes", stats.precisaoPasses != null ? `${stats.precisaoPasses}%` : "—"],
+    ["Precisão de finalizações", stats.precisaoFinalizacoes != null ? `${stats.precisaoFinalizacoes}%` : "—"],
     ["Faltas cometidas", stats.faltasCometidas], ["Faltas sofridas", stats.faltasSofridas],
     ["Nota média", stats.mediaNota != null ? stats.mediaNota.toFixed(1) : "—"],
   ];
@@ -1469,7 +1510,7 @@ function AtletaPerfil({ data, update, params, nav, readOnly }) {
           {linhas.map(([label, val]) => (
             <div key={label} className="rounded-lg p-3 flex items-center justify-between" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
               <span style={{ color: C.textMuted, fontSize: 12 }}>{label}</span>
-              <span style={{ color: C.text, fontFamily: FONT_DISPLAY, fontSize: 20 }}>{val}</span>
+              <span style={{ color: (label === "Gols" || label === "Defesas") ? C.lime : C.text, fontFamily: FONT_DISPLAY, fontSize: 20 }}>{val}</span>
             </div>
           ))}
         </div>
@@ -1664,6 +1705,9 @@ function acaoLabel(data, ev) {
     case "positivo": return `Positivo — ${ev.variante}`;
     case "bola_parada": return `${ev.categoria} — ${ev.jogada} (${ev.resultado})`;
     case "finalizacao_time": return `Finalização ${ev.lado === "contra" ? "contra" : "a favor"} — ${ev.variante}`;
+    case "finalizacao_jogador": return `Finalização — ${ev.variante}`;
+    case "passe": return `Passe ${ev.variante}`;
+    case "passe_time": return `Passe do adversário — ${ev.variante}`;
     case "substituicao": {
       const sai = data.atletas.find((a) => a.id === ev.saiId);
       const entra = data.atletas.find((a) => a.id === ev.entraId);
@@ -1731,7 +1775,60 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
 }
 
 
-            function ScoutJogo({ data, update, params, nav }) {
+            function AssistirVideoInline({ C, evento, scout, periodos }) {
+  const [aberto, setAberto] = useState(false);
+  const [urls, setUrls] = useState({});
+  const [ativa, setAtiva] = useState(null);
+  const [carregando, setCarregando] = useState(false);
+
+  const porPeriodo = periodos
+    .map((p) => ({ periodo: p, segmentos: (scout.videosPorPeriodo?.[p.numero]?.segmentos || []).filter((s) => s.key) }))
+    .filter((g) => g.segmentos.length > 0);
+
+  if (porPeriodo.length === 0) return null;
+
+  const abrirSegmento = async (periodoNumero, seg) => {
+    const chave = `p${periodoNumero}-s${seg.indice}`;
+    setAtiva(chave);
+    if (!urls[chave]) {
+      setCarregando(true);
+      try {
+        const { url } = await obterUrlReproducao({ partidaId: `${evento.id}_p${periodoNumero}_s${seg.indice}`, videoKey: seg.key });
+        setUrls((prev) => ({ ...prev, [chave]: url }));
+      } catch (e) { /* ignora */ }
+      setCarregando(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}`, overflow: "hidden" }}>
+      <button onClick={() => setAberto((v) => !v)} className="w-full flex items-center justify-between px-4 py-3">
+        <span className="flex items-center gap-2" style={{ color: C.text, fontSize: 13, fontWeight: 600 }}><Play size={14} fill={C.lime} /> Assistir vídeo (enquanto edita)</span>
+        <ChevronRight size={16} color={C.textMuted} style={{ transform: aberto ? "rotate(90deg)" : "none" }} />
+      </button>
+      {aberto && (
+        <div className="px-4 pb-4">
+          <div className="flex gap-1.5 mb-2 flex-wrap">
+            {porPeriodo.flatMap(({ periodo, segmentos }) => segmentos.map((seg) => {
+              const chave = `p${periodo.numero}-s${seg.indice}`;
+              return (
+                <button key={chave} onClick={() => abrirSegmento(periodo.numero, seg)} className="py-1.5 px-2 rounded-lg text-xs" style={{ background: ativa === chave ? C.limeDim : C.surface, border: `1px solid ${ativa === chave ? C.lime : C.line}`, color: ativa === chave ? C.lime : C.textMuted }}>
+                  {periodo.label} · trecho {seg.indice + 1}
+                </button>
+              );
+            }))}
+          </div>
+          {carregando && <p className="text-center text-xs py-4" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
+          {ativa && urls[ativa] && (
+            <video src={urls[ativa]} controls className="w-full rounded-lg" style={{ maxHeight: 220 }} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScoutJogo({ data, update, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const scout = data.scouts[params.id];
   const [atletaAtivo, setAtletaAtivo] = useState(null);
@@ -2064,11 +2161,13 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
     <div>
       <ScreenHeader title="Scout ao vivo" onBack={() => nav("evento-detalhe", { id: evento.id })} />
       <div className="px-5">
+        <AssistirVideoInline C={C} evento={evento} scout={scout} periodos={periodos} />
         <VideoRecordingPanel
           key={scout.periodoAtual}
           C={C}
           partidaId={`${evento.id}_p${scout.periodoAtual}`}
           periodoLabel={periodoAtualObj.label}
+          indiceInicial={(scout.videosPorPeriodo?.[scout.periodoAtual]?.segmentos || []).length}
           onSegmentoEnviado={({ indice, key }) => update((d) => {
             const s = d.scouts[evento.id];
             s.videosPorPeriodo = s.videosPorPeriodo || {};
@@ -2230,13 +2329,23 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
 
         <CourtLine label="Últimos eventos" />
         <div className="flex flex-col gap-1.5">
-          {ultimos.length === 0 && <EmptyHint text="Nenhum evento registrado ainda." />}
+          {ultimos.length === 0 && (scout.itensRevisaoPendentes || []).length === 0 && <EmptyHint text="Nenhum evento registrado ainda." />}
           {ultimos.map((ev) => {
             const at = data.atletas.find((x) => x.id === ev.atletaId);
             return (
               <div key={ev.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface }}>
                 <span style={{ color: C.text }}>{at ? `${at.numero} · ${at.nome} — ` : ""}{acaoLabel(data, ev)}</span>
                 {ev.periodoNumero && <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>}
+              </div>
+            );
+          })}
+          {(scout.itensRevisaoPendentes || []).filter((it) => !it.excluido).slice(-4).reverse().map((it) => {
+            const at = it.atletaId ? data.atletas.find((x) => x.id === it.atletaId) : null;
+            const rotulo = { passe: "Passe", finalizacao: "Finalização", bola_parada: "Bola parada", drible: "Drible", falta: "Falta" }[it.tipo] || it.tipo;
+            return (
+              <div key={it.idTemp} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface, border: `1px dashed ${C.orange}` }}>
+                <span style={{ color: C.orange }}>⚠️ {at ? `${at.numero} · ${at.nome} — ` : ""}{rotulo} — requer revisão manual</span>
+                <span style={{ color: C.textFaint }}>P{it.periodoNumero}</span>
               </div>
             );
           })}
@@ -2503,11 +2612,11 @@ function RevisaoIA({ data, update, params, nav }) {
   const atualizarItem = (idTemp, patch) => setItens((prev) => prev.map((it) => (it.idTemp === idTemp ? { ...it, ...patch } : it)));
 
   const corConfianca = (nivel) => (nivel === "alta" ? C.lime : nivel === "media" ? C.orange : C.red);
-  const labelTipo = (tipo) => (tipo === "passe" ? "Passe" : "Finalização");
+  const labelTipo = (tipo) => ({ passe: "Passe", finalizacao: "Finalização", bola_parada: "Bola parada", drible: "Drible", falta: "Falta" }[tipo] || tipo);
   const mmss = (seg) => `${String(Math.floor(seg / 60)).padStart(2, "0")}:${String(Math.floor(seg % 60)).padStart(2, "0")}`;
 
   const aptos = itens.filter((it) => !it.excluido && it.confirmado);
-  const foraIdentificado = (it) => (it.lado === "pro" ? !it.atletaId : false);
+  const foraIdentificado = (it) => (it.tipo !== "bola_parada" && it.lado === "pro" ? !it.atletaId : false);
   const semJogador = aptos.filter(foraIdentificado).length;
   const totalNaoIdentificados = itens.filter((it) => !it.excluido && foraIdentificado(it)).length;
   const itensExibidos = apenasNaoIdentificados ? itens.filter((it) => !it.excluido && foraIdentificado(it)) : itens;
@@ -2553,12 +2662,14 @@ function RevisaoIA({ data, update, params, nav }) {
             <div className="flex gap-1.5 mb-3 flex-wrap">
               {segmentosComVideo.map((seg) => {
                 const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
+                const pendentesDoSegmento = itens.filter((it) => !it.excluido && !it.confirmado && it.periodoNumero === seg.periodoNumero && it.segmentoIndice === seg.indice).length;
                 return (
                   <button key={`p${seg.periodoNumero}-s${seg.indice}`} onClick={() => setSegmentoAtivo({ periodoNumero: seg.periodoNumero, indice: seg.indice })} className="py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: ativo ? C.limeDim : C.surface, border: `1px solid ${ativo ? C.lime : C.line}`, color: ativo ? C.lime : C.textMuted }}>
                     {seg.analiseStatus === "processando" && <Loader2 size={12} className="animate-spin" />}
-                    {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} />}
+                    {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} color={pendentesDoSegmento > 0 ? C.orange : C.lime} />}
                     {seg.analiseStatus === "erro" && <AlertTriangle size={12} color={C.red} />}
                     {seg.periodoLabel} · trecho {seg.indice + 1}
+                    {seg.analiseStatus === "concluido" && pendentesDoSegmento > 0 && <span style={{ color: C.orange }}>⚠️ {pendentesDoSegmento}</span>}
                   </button>
                 );
               })}
@@ -2578,12 +2689,22 @@ function RevisaoIA({ data, update, params, nav }) {
               );
             })}
 
-            {segmentosProcessando.length > 0 && (
+            {segmentosProcessando.length > 0 ? (
               <div className="rounded-xl p-4 mb-3 flex flex-col items-center gap-1.5" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
                 <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
-                  <Loader2 size={14} className="animate-spin" /> Terminando de analisar {segmentosProcessando.length} trecho(s)…
+                  <Loader2 size={14} className="animate-spin" /> Analisando {segmentosProcessando.length} trecho(s)…
                 </div>
                 <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>Pode aguardar aqui — os resultados aparecem sozinhos assim que ficarem prontos.</span>
+              </div>
+            ) : segmentosComVideo.length > 0 && (
+              <div className="rounded-xl p-3 mb-3 flex items-center gap-2" style={{ background: C.limeDim, border: `1px solid ${C.lime}` }}>
+                <CheckCircle2 size={14} color={C.lime} />
+                <span style={{ color: C.lime, fontSize: 12, fontWeight: 700 }}>
+                  Análise concluída
+                  {itens.filter((it) => !it.excluido && !it.confirmado).length > 0 && (
+                    <span style={{ color: C.orange, fontWeight: 600 }}> (⚠️ {itens.filter((it) => !it.excluido && !it.confirmado).length} requer{itens.filter((it) => !it.excluido && !it.confirmado).length === 1 ? "" : "em"} revisão manual)</span>
+                  )}
+                </span>
               </div>
             )}
 
@@ -2625,12 +2746,33 @@ function RevisaoIA({ data, update, params, nav }) {
                           {it.resultado === "gol" && it.tipo === "finalizacao" && (
                             <p style={{ color: C.orange, fontSize: 10 }}>⚠️ Marcado como gol, mas sem comemoração clara — confirme com atenção antes de aceitar.</p>
                           )}
-                          <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
-                            <button onClick={() => atualizarItem(it.idTemp, { lado: "pro" })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "pro" ? C.limeDim : "transparent", color: it.lado === "pro" ? C.lime : C.textMuted }}>A favor</button>
-                            <button onClick={() => atualizarItem(it.idTemp, { lado: "contra", atletaId: null, destinoId: null })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "contra" ? `${C.orange}22` : "transparent", color: it.lado === "contra" ? C.orange : C.textMuted }}>Contra (adversário)</button>
-                          </div>
+                          {it.tipo === "falta" && !it.pistaSonora && (
+                            <p style={{ color: C.orange, fontSize: 10 }}>⚠️ Sem apito/reclamação claros identificados no áudio — julgamento mais incerto, confirme com atenção.</p>
+                          )}
+                          {it.tipo === "falta" && it.pistaSonora && (
+                            <p style={{ color: C.textFaint, fontSize: 10 }}>🔊 Apito ou reclamação identificados no áudio.</p>
+                          )}
 
-                          {it.lado === "pro" && (
+                          {(it.tipo === "passe" || it.tipo === "finalizacao") && (
+                            <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+                              <button onClick={() => atualizarItem(it.idTemp, { lado: "pro" })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "pro" ? C.limeDim : "transparent", color: it.lado === "pro" ? C.lime : C.textMuted }}>A favor</button>
+                              <button onClick={() => atualizarItem(it.idTemp, { lado: "contra", atletaId: null, destinoId: null })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "contra" ? `${C.orange}22` : "transparent", color: it.lado === "contra" ? C.orange : C.textMuted }}>Contra (adversário)</button>
+                            </div>
+                          )}
+                          {it.tipo === "falta" && (
+                            <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+                              <button onClick={() => atualizarItem(it.idTemp, { lado: "pro" })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "pro" ? C.limeDim : "transparent", color: it.lado === "pro" ? C.lime : C.textMuted }}>Nossa equipe cometeu</button>
+                              <button onClick={() => atualizarItem(it.idTemp, { lado: "contra", atletaId: null })} className="flex-1 py-1.5 text-xs font-semibold" style={{ background: it.lado === "contra" ? `${C.orange}22` : "transparent", color: it.lado === "contra" ? C.orange : C.textMuted }}>Adversário cometeu</button>
+                            </div>
+                          )}
+
+                          {it.tipo === "bola_parada" && (
+                            <p style={{ color: C.text, fontSize: 12 }}>
+                              {{ escanteio: "Escanteio", lateral: "Lateral ofensivo", falta_cobrada: "Falta cobrada", penalti: "Pênalti" }[it.categoriaBolaParada] || "Bola parada"} a favor — a jogada específica fica pra você completar depois, se quiser, direto no relatório.
+                            </p>
+                          )}
+
+                          {it.lado === "pro" && (it.tipo === "passe" || it.tipo === "finalizacao" || it.tipo === "drible" || it.tipo === "falta") && (
                             <div className="flex items-center gap-2">
                               <select value={it.atletaId || ""} onChange={(e) => { const a = atletas.find((x) => x.id === e.target.value); atualizarItem(it.idTemp, { atletaId: a?.id || null, atletaNumero: a?.numero ?? null, atletaNome: a?.nome || null }); }} className="flex-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: it.atletaId ? C.text : C.orange, border: `1px solid ${C.line}` }}>
                                 <option value="">{it.atletaNumero != null ? `#${it.atletaNumero} não identificado` : "Não identificado"}</option>
@@ -2658,6 +2800,14 @@ function RevisaoIA({ data, update, params, nav }) {
                               <option value="trave">Trave</option>
                               <option value="nova_jogada">Nova jogada (rebote)</option>
                               <option value="fora">Pra fora</option>
+                            </select>
+                          )}
+                          {it.tipo === "bola_parada" && (
+                            <select value={it.resultado || "neutro"} onChange={(e) => atualizarItem(it.idTemp, { resultado: e.target.value })} className="rounded-lg px-2 py-1.5 text-xs" style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}>
+                              <option value="gol">Gerou gol a favor</option>
+                              <option value="chance_perigosa">Chance perigosa</option>
+                              <option value="erro">Erro de jogada</option>
+                              <option value="neutro">Sem consequência clara</option>
                             </select>
                           )}
 
@@ -2702,16 +2852,35 @@ function RevisaoIA({ data, update, params, nav }) {
 // Melhores momentos — replay dos gols direto no relatório, pulando pro
 // segundo exato do vídeo (quando o lance veio da análise por IA e temos
 // o timestamp guardado). Some sozinho se a partida não teve vídeo.
-function MelhoresMomentos({ C, evento, scout, periodos }) {
+function MelhoresMomentos({ C, evento, scout, periodos, atletas }) {
   const [urls, setUrls] = useState({});
   const [abertoId, setAbertoId] = useState(null);
   const [carregandoId, setCarregandoId] = useState(null);
 
-  const lances = scout.eventosScout.filter((e) => (e.acao === "gol" || e.acao === "gol_adv") && e.timestampSeg != null && e.segmentoIndice != null);
+  // Gols, finalizações, assistências, faltas, bolas paradas e dribles —
+  // tudo que veio da análise de vídeo carrega o timestamp exato do lance.
+  // Eventos lançados manualmente (sem vídeo) não entram aqui, porque não
+  // têm um segundo exato pra pular no replay.
+  const relevantes = { gol: 1, gol_adv: 1, finalizacao_time: 1, assistencia: 1, falta: 1, bola_parada: 1, positivo: 1 };
+  const lances = scout.eventosScout
+    .filter((e) => relevantes[e.acao] && e.timestampSeg != null && e.segmentoIndice != null && (e.acao !== "positivo" || e.variante === "Jogada individual"))
+    .sort((a, b) => (a.periodoNumero - b.periodoNumero) || (a.timestampSeg - b.timestampSeg));
 
   if (lances.length === 0) return null;
 
   const labelPeriodo = (n) => periodos.find((p) => p.numero === n)?.label || `${n}º Tempo`;
+  const labelLance = (ev) => {
+    const at = ev.atletaId ? atletas.find((a) => a.id === ev.atletaId) : null;
+    const nomeAt = at ? `${at.numero} · ${at.nome} — ` : "";
+    if (ev.acao === "gol") return `⚽ ${nomeAt}Gol a favor`;
+    if (ev.acao === "gol_adv") return "🥅 Gol adversário";
+    if (ev.acao === "assistencia") return `🎯 ${nomeAt}Assistência`;
+    if (ev.acao === "finalizacao_time") return `${ev.lado === "contra" ? "🔻" : "🎯"} Finalização ${ev.lado === "contra" ? "contra" : "a favor"} — ${ev.variante}`;
+    if (ev.acao === "falta") return `🟨 Falta ${ev.variante === "Cometida" ? "cometida" : "sofrida"}${nomeAt ? ` — ${nomeAt}` : ""}`;
+    if (ev.acao === "bola_parada") return `🔄 ${ev.categoria} a favor`;
+    if (ev.acao === "positivo") return `⚡ ${nomeAt}Drible`;
+    return ev.acao;
+  };
 
   const abrirLance = async (ev) => {
     const chave = `p${ev.periodoNumero}-s${ev.segmentoIndice}`;
@@ -2730,6 +2899,12 @@ function MelhoresMomentos({ C, evento, scout, periodos }) {
   };
 
   return (
+    <MelhoresMomentosBody C={C} lances={lances} labelPeriodo={labelPeriodo} labelLance={labelLance} abertoId={abertoId} urls={urls} carregandoId={carregandoId} abrirLance={abrirLance} />
+  );
+}
+
+function MelhoresMomentosBody({ C, lances, labelPeriodo, labelLance, abertoId, urls, carregandoId, abrirLance }) {
+  return (
     <>
       <CourtLine label="Melhores Momentos" />
       <div className="flex flex-col gap-2 mb-2">
@@ -2739,7 +2914,7 @@ function MelhoresMomentos({ C, evento, scout, periodos }) {
             <div key={ev.id} className="rounded-xl p-3" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
               <div className="flex items-center justify-between">
                 <span style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>
-                  {ev.acao === "gol" ? "⚽ Gol a favor" : "🥅 Gol adversário"} — {labelPeriodo(ev.periodoNumero)}
+                  {labelLance(ev)} — {labelPeriodo(ev.periodoNumero)}
                 </span>
                 <button onClick={() => abrirLance(ev)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 11 }}>
                   {carregandoId === ev.id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} fill={C.lime} />} {abertoId === ev.id ? "Fechar" : "Assistir"}
@@ -2762,9 +2937,67 @@ function MelhoresMomentos({ C, evento, scout, periodos }) {
   );
 }
 
-function RelatorioJogo({ data, params, nav }) {
+function VideosDaPartida({ C, evento, scout, periodos }) {
+  const [urls, setUrls] = useState({});
+  const [abertoChave, setAbertoChave] = useState(null);
+  const [carregandoChave, setCarregandoChave] = useState(null);
+
+  const porPeriodo = periodos
+    .map((p) => ({ periodo: p, segmentos: (scout.videosPorPeriodo?.[p.numero]?.segmentos || []).filter((s) => s.key) }))
+    .filter((g) => g.segmentos.length > 0);
+
+  if (porPeriodo.length === 0) return null;
+
+  const abrirFechar = async (periodoNumero, seg) => {
+    const chave = `p${periodoNumero}-s${seg.indice}`;
+    if (abertoChave === chave) { setAbertoChave(null); return; }
+    if (!urls[chave]) {
+      setCarregandoChave(chave);
+      try {
+        const { url } = await obterUrlReproducao({ partidaId: `${evento.id}_p${periodoNumero}_s${seg.indice}`, videoKey: seg.key });
+        setUrls((prev) => ({ ...prev, [chave]: url }));
+      } catch (e) { setCarregandoChave(null); return; }
+      setCarregandoChave(null);
+    }
+    setAbertoChave(chave);
+  };
+
+  return (
+    <>
+      <CourtLine label="Vídeos da Partida" />
+      <div className="flex flex-col gap-3 mb-2">
+        {porPeriodo.map(({ periodo, segmentos }) => (
+          <div key={periodo.numero}>
+            <p style={{ color: C.textFaint, fontSize: 10, letterSpacing: 0.5 }} className="uppercase mb-1.5">{periodo.label}</p>
+            <div className="flex flex-col gap-2">
+              {segmentos.map((seg) => {
+                const chave = `p${periodo.numero}-s${seg.indice}`;
+                return (
+                  <div key={chave} className="rounded-xl p-3" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                    <div className="flex items-center justify-between">
+                      <span style={{ color: C.text, fontSize: 12 }}>Trecho {seg.indice + 1}</span>
+                      <button onClick={() => abrirFechar(periodo.numero, seg)} className="flex items-center gap-1" style={{ color: C.lime, fontSize: 11 }}>
+                        {carregandoChave === chave ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} fill={C.lime} />} {abertoChave === chave ? "Fechar" : "Assistir"}
+                      </button>
+                    </div>
+                    {abertoChave === chave && urls[chave] && (
+                      <video src={urls[chave]} controls autoPlay className="w-full rounded-lg mt-2" style={{ maxHeight: 220 }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function RelatorioJogo({ data, update, params, nav, readOnly }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const scout = data.scouts[params.id];
+  const [editandoBolaParada, setEditandoBolaParada] = useState(null); // id do evento sendo editado
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const equipe = data.equipes.find((e) => e.id === evento.equipeId);
   const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
@@ -2813,7 +3046,18 @@ function RelatorioJogo({ data, params, nav }) {
           {mvp && <p style={{ color: C.lime, fontSize: 12 }} className="mt-1">🏆 MVP: {mvp.numero} · {mvp.nome}</p>}
         </Card>
 
-        <MelhoresMomentos C={C} evento={evento} scout={scout} periodos={periodos} />
+        {!readOnly && (
+          <button
+            onClick={() => nav("scout-jogo", { id: evento.id, forcarEtapa: "ao_vivo" })}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm mb-2"
+            style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}
+          >
+            <Pencil size={14} /> Editar estatísticas (modo rápido / bolas paradas)
+          </button>
+        )}
+
+        <MelhoresMomentos C={C} evento={evento} scout={scout} periodos={periodos} atletas={atletas} />
+        <VideosDaPartida C={C} evento={evento} scout={scout} periodos={periodos} />
 
         <CourtLine label="Comparação por período" />
         <table className="w-full text-xs" style={{ color: C.text }}>
@@ -2987,12 +3231,51 @@ function RelatorioJogo({ data, params, nav }) {
               {bolasParadas.map((ev) => (
                 <div key={ev.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface }}>
                   <span style={{ color: C.text }}>{ev.categoria} — {ev.jogada}: <span style={{ color: C.textMuted }}>{ev.resultado}</span></span>
-                  <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>
+                  <div className="flex items-center gap-2">
+                    <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>
+                    {!readOnly && ev.fonte === "ia" && (
+                      <button onClick={() => setEditandoBolaParada(ev.id)} style={{ color: C.lime }}><Pencil size={12} /></button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           </>
         )}
+
+        {editandoBolaParada && (() => {
+          const ev = bolasParadas.find((e) => e.id === editandoBolaParada);
+          if (!ev) return null;
+          const def = BOLAS_PARADAS.find((b) => b.label === ev.categoria);
+          return (
+            <Modal title="Qual foi a jogada?" onClose={() => setEditandoBolaParada(null)}>
+              <div className="flex flex-col gap-3">
+                <p style={{ color: C.textMuted, fontSize: 12 }}>{ev.categoria} — identificado pela análise de vídeo. Complete com a jogada ensaiada usada e o resultado real, se quiser deixar mais preciso.</p>
+                {def?.jogadas && (
+                  <div>
+                    <p style={{ color: C.textFaint, fontSize: 10 }} className="uppercase mb-1.5">Jogada ensaiada</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {def.jogadas.map((j) => (
+                        <button key={j} onClick={() => update((d) => { const alvo = d.scouts[evento.id].eventosScout.find((x) => x.id === ev.id); if (alvo) alvo.jogada = j; return d; })} className="px-3 py-1.5 rounded-lg text-xs" style={{ background: ev.jogada === j ? C.limeDim : C.surface, border: `1px solid ${ev.jogada === j ? C.lime : C.line}`, color: ev.jogada === j ? C.lime : C.textMuted }}>{j}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {def?.outcomes && (
+                  <div>
+                    <p style={{ color: C.textFaint, fontSize: 10 }} className="uppercase mb-1.5">Resultado</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {def.outcomes.map((o) => (
+                        <button key={o} onClick={() => update((d) => { const alvo = d.scouts[evento.id].eventosScout.find((x) => x.id === ev.id); if (alvo) alvo.resultado = o; return d; })} className="px-3 py-1.5 rounded-lg text-xs" style={{ background: ev.resultado === o ? C.limeDim : C.surface, border: `1px solid ${ev.resultado === o ? C.lime : C.line}`, color: ev.resultado === o ? C.lime : C.textMuted }}>{o}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <Btn variant="primary" className="w-full" onClick={() => setEditandoBolaParada(null)}>Pronto</Btn>
+              </div>
+            </Modal>
+          );
+        })()}
 
         <CourtLine label="Destaques da partida" />
         {destaquesOrdenados.length === 0 && <EmptyHint text="Nenhuma nota registrada." />}
@@ -3197,4 +3480,4 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
       )}
     </div>
   );
-                                                                                                   }
+        }
