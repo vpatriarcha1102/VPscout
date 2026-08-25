@@ -35,6 +35,13 @@ export function getR2Client() {
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // O R2 não suporta os headers de checksum (x-amz-checksum-*) que
+    // versões recentes do AWS SDK v3 passaram a enviar por padrão em
+    // toda requisição (inclusive multipart upload). Sem isso desligado,
+    // chamadas como CreateMultipartUploadCommand falham com um erro
+    // genérico do R2, mesmo com credenciais e bucket corretos.
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
   });
   return clienteCache;
 }
@@ -70,7 +77,10 @@ export function erroSeguro(e, contexto) {
     return jsonResponse(500, { erro: e.message });
   }
   console.error(`[${contexto}]`, e);
-  return jsonResponse(500, { erro: `Falha em ${contexto}.` });
+  const detalhe = e?.Code || e?.name || e?.message;
+  return jsonResponse(500, {
+    erro: detalhe ? `Falha em ${contexto}: ${detalhe}` : `Falha em ${contexto}.`,
+  });
 }
 
 export function verificarToken(event) {
