@@ -281,12 +281,11 @@ export async function handler(event) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      // "pro" em vez de "flash" — modelo mais lento e mais caro por
-      // análise, mas com leitura de cena bem mais consistente e precisa
-      // em lances de bola parada/finalizações que o "flash" vinha errando.
-      // Se quiser voltar pro modo mais rápido/barato, troque de volta pra
-      // "gemini-3.6-flash".
-      model: "gemini-3.6-pro",
+      // Voltando para o "flash": o "gemini-3.6-pro" que eu tinha colocado
+      // aqui parou de gerar os eventos direito (a análise "concluía" mas
+      // vinha vazia). Erro meu ter trocado sem confirmar que o modelo
+      // respondia igual — revertido pro que já estava validado.
+      model: "gemini-3.6-flash",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: EVENTOS_SCHEMA,
@@ -303,7 +302,22 @@ export async function handler(event) {
       { text: montarPrompt(jogadoresCadastrados, coresUniforme) },
     ]);
 
-    const eventosIA = JSON.parse(resultado.response.text());
+    const textoResposta = resultado.response.text();
+    let eventosIA;
+    try {
+      eventosIA = JSON.parse(textoResposta);
+    } catch {
+      // A IA respondeu, mas não veio um JSON válido (ex: recusou por
+      // segurança, cortou a resposta pela metade, etc). Isso ANTES ficava
+      // marcado como "concluído" com uma lista vazia, dando a entender que
+      // o vídeo foi analisado e simplesmente não achou nada — quando na
+      // verdade a análise nem rodou direito. Agora isso vira erro de
+      // verdade, com o motivo, pra você saber que precisa tentar de novo.
+      throw new Error("A IA não retornou um resultado válido para este trecho. Resposta bruta: " + textoResposta.slice(0, 300));
+    }
+    if (!Array.isArray(eventosIA)) {
+      throw new Error("A IA retornou um formato inesperado (não é uma lista de eventos).");
+    }
 
     await salvarJSON(statusKey, {
       status: "concluido",
