@@ -294,14 +294,16 @@ export function aplicarEventosConfirmados(scout, itens, uid) {
         confianca: it.confianca,
       });
     } else if (it.tipo === "bola_parada") {
-      // Sempre "a favor" — a categoria/jogada nomeada específica fica pro
-      // treinador completar depois, se quiser, direto no relatório.
+      // Sempre "a favor". A categoria e a jogada específica agora vêm da
+      // seleção feita pelo treinador na própria tela de revisão manual
+      // (categoriaLabelManual / jogada) — a IA só dá o palpite inicial.
+      const categoriaFinal = it.categoriaLabelManual || CATEGORIA_BOLA_PARADA_LABEL[it.categoriaBolaParada] || "Falta";
       scout.eventosScout.push({
         id: uid(),
         acao: "bola_parada",
         atletaId: null,
-        categoria: CATEGORIA_BOLA_PARADA_LABEL[it.categoriaBolaParada] || "Falta",
-        jogada: "(via IA — revisar jogada usada)",
+        categoria: categoriaFinal,
+        jogada: it.jogada || categoriaFinal,
         resultado: RESULTADO_BOLA_PARADA_LABEL[it.resultado] || "Erro de jogada",
         periodoNumero,
         segmentoIndice: it.segmentoIndice,
