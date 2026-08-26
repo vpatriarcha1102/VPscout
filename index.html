@@ -19,6 +19,62 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!-- Rede de segurança contra tela branca travada. Fica FORA do bundle
+         React de propósito: se o main.jsx falhar ao carregar (ex: cache
+         antigo do celular apontando pra um arquivo que já não existe mais
+         depois de um novo deploy), esse script roda mesmo assim, porque
+         está direto no HTML.
+         1) Se um script/arquivo falhar ao carregar, força recarregar a
+            página UMA vez (com um jeito de evitar loop infinito).
+         2) Se depois de alguns segundos a tela continuar vazia, mostra um
+            botão pra recarregar do zero, limpando o cache do app. -->
+    <script>
+      (function () {
+        var CHAVE = "vpscouts_recarregou_uma_vez";
+        window.addEventListener(
+          "error",
+          function (e) {
+            var alvo = e.target;
+            if (alvo && (alvo.tagName === "SCRIPT" || alvo.tagName === "LINK")) {
+              if (!sessionStorage.getItem(CHAVE)) {
+                sessionStorage.setItem(CHAVE, "1");
+                location.reload();
+              }
+            }
+          },
+          true
+        );
+
+        setTimeout(function () {
+          var raiz = document.getElementById("root");
+          if (raiz && raiz.childElementCount === 0) {
+            raiz.innerHTML =
+              '<div style="min-height:100vh;background:#0B0E11;color:#EAF6F8;' +
+              'font-family:-apple-system,system-ui,sans-serif;display:flex;' +
+              'flex-direction:column;align-items:center;justify-content:center;' +
+              'gap:14px;padding:24px;text-align:center;box-sizing:border-box;">' +
+              '<p style="font-size:14px;color:#7C9095;">O app demorou demais pra carregar.</p>' +
+              '<button id="btn-recarregar-forcado" style="background:#5CE1E6;' +
+              'color:#04141A;border:none;border-radius:10px;padding:12px 20px;' +
+              'font-weight:700;font-size:14px;">Recarregar app</button>' +
+              "</div>";
+            document.getElementById("btn-recarregar-forcado").onclick = function () {
+              if (window.caches) {
+                caches.keys().then(function (nomes) {
+                  Promise.all(nomes.map(function (n) { return caches.delete(n); })).then(function () {
+                    location.reload(true);
+                  });
+                });
+              } else {
+                location.reload(true);
+              }
+            };
+          }
+        }, 8000);
+      })();
+    </script>
+
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
