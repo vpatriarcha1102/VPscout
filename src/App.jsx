@@ -2750,6 +2750,19 @@ function RevisaoIA({ data, update, params, nav }) {
   const videoRefs = useRef({});
   const carregadosRef = useRef(new Set());
 
+  // Reabre um segmento pra análise (usado pelo botão "Tentar analisar de
+  // novo" quando dá erro ou termina sem nenhum evento). O hook
+  // useAnaliseAoVivo detecta o status "idle" e dispara a análise de novo
+  // sozinho, do mesmo jeito que faz quando um trecho novo é gravado.
+  const atualizarSegmento = (periodoNumero, indice, patch) => {
+    update((d) => {
+      const s = d.scouts[evento.id];
+      const seg = (s.videosPorPeriodo?.[periodoNumero]?.segmentos || []).find((x) => x.indice === indice);
+      if (seg) Object.assign(seg, patch);
+      return d;
+    });
+  };
+
   // Junta na lista local qualquer item novo que a análise em segundo
   // plano tenha jogado em scout.itensRevisaoPendentes — sem sobrescrever
   // o que o treinador já estiver editando.
@@ -2811,7 +2824,7 @@ function RevisaoIA({ data, update, params, nav }) {
     setConfirmando(true);
     update((d) => {
       const s = d.scouts[evento.id];
-      aplicarEventosConfirmados(s, itens, uid);
+      aplicarEventosConfirmados(s, itens, uid, data.atletas);
       const idsProcessados = new Set(itens.map((it) => it.idTemp));
       s.itensRevisaoPendentes = (s.itensRevisaoPendentes || []).filter((it) => !idsProcessados.has(it.idTemp));
       return d;
@@ -2850,13 +2863,15 @@ function RevisaoIA({ data, update, params, nav }) {
                 {segmentosComVideo.map((seg) => {
                   const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
                   const pendentesDoSegmento = itens.filter((it) => !it.excluido && !it.confirmado && it.periodoNumero === seg.periodoNumero && it.segmentoIndice === seg.indice).length;
+                  const eventosDoSegmento = itens.filter((it) => it.periodoNumero === seg.periodoNumero && it.segmentoIndice === seg.indice).length;
                   return (
                     <button key={`p${seg.periodoNumero}-s${seg.indice}`} onClick={() => setSegmentoAtivo({ periodoNumero: seg.periodoNumero, indice: seg.indice })} className="py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: ativo ? C.limeDim : C.surface, border: `1px solid ${ativo ? C.lime : C.line}`, color: ativo ? C.lime : C.textMuted }}>
                       {seg.analiseStatus === "processando" && <Loader2 size={12} className="animate-spin" />}
-                      {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} color={pendentesDoSegmento > 0 ? C.orange : C.lime} />}
+                      {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} color={pendentesDoSegmento > 0 ? C.orange : (eventosDoSegmento === 0 ? C.textFaint : C.lime)} />}
                       {seg.analiseStatus === "erro" && <AlertTriangle size={12} color={C.red} />}
                       {seg.periodoLabel} · trecho {seg.indice + 1}
                       {seg.analiseStatus === "concluido" && pendentesDoSegmento > 0 && <span style={{ color: C.orange }}>⚠️ {pendentesDoSegmento}</span>}
+                      {seg.analiseStatus === "concluido" && pendentesDoSegmento === 0 && eventosDoSegmento === 0 && <span style={{ color: C.textFaint }}>· vazio</span>}
                     </button>
                   );
                 })}
@@ -2865,14 +2880,41 @@ function RevisaoIA({ data, update, params, nav }) {
               {segmentosComVideo.map((seg) => {
                 const chave = `p${seg.periodoNumero}-s${seg.indice}`;
                 const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
+                const eventosDoSegmento = itens.filter((it) => it.periodoNumero === seg.periodoNumero && it.segmentoIndice === seg.indice).length;
                 return (
-                  <div key={chave} className="rounded-xl overflow-hidden" style={{ background: "#000", border: `1px solid ${C.line}`, display: ativo ? "block" : "none" }}>
-                    {erroVideoPorSegmento[chave] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorSegmento[chave]}</p>}
-                    {!erroVideoPorSegmento[chave] && !videoUrls[chave] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
-                    {videoUrls[chave] && (
-                      <video ref={(el) => { videoRefs.current[chave] = el; }} src={videoUrls[chave]} controls playsInline preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
+                  <React.Fragment key={chave}>
+                    {ativo && seg.analiseStatus === "erro" && (
+                      <div className="rounded-lg px-3 py-2.5 mb-2 text-xs" style={{ background: "rgba(255,90,90,0.08)", border: `1px solid ${C.red}` }}>
+                        <p style={{ color: C.red }} className="mb-1.5">⚠️ A análise desse trecho falhou: {seg.analiseErro || "erro desconhecido"}</p>
+                        <button
+                          onClick={() => atualizarSegmento(seg.periodoNumero, seg.indice, { analiseStatus: "idle", analiseErro: null })}
+                          className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg font-semibold"
+                          style={{ background: C.red, color: "#fff" }}
+                        >
+                          <RotateCcw size={12} /> Tentar analisar de novo
+                        </button>
+                      </div>
                     )}
-                  </div>
+                    {ativo && seg.analiseStatus === "concluido" && eventosDoSegmento === 0 && (
+                      <div className="rounded-lg px-3 py-2.5 mb-2 text-xs" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                        <p style={{ color: C.textMuted }} className="mb-1.5">A análise desse trecho terminou sem identificar nenhum evento. Se você sabe que teve lance nesse trecho, tente analisar de novo — às vezes a IA não reconhece de primeira.</p>
+                        <button
+                          onClick={() => atualizarSegmento(seg.periodoNumero, seg.indice, { analiseStatus: "idle", analiseErro: null })}
+                          className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg font-semibold"
+                          style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}
+                        >
+                          <RotateCcw size={12} /> Tentar analisar de novo
+                        </button>
+                      </div>
+                    )}
+                    <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: `1px solid ${C.line}`, display: ativo ? "block" : "none" }}>
+                      {erroVideoPorSegmento[chave] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorSegmento[chave]}</p>}
+                      {!erroVideoPorSegmento[chave] && !videoUrls[chave] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
+                      {videoUrls[chave] && (
+                        <video ref={(el) => { videoRefs.current[chave] = el; }} src={videoUrls[chave]} controls playsInline preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
+                      )}
+                    </div>
+                  </React.Fragment>
                 );
               })}
             </div>
