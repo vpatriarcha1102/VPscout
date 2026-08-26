@@ -72,6 +72,27 @@
             };
           }
         }, 8000);
+
+        // Tela branca ao VOLTAR pro app (não ao abrir pela primeira vez):
+        // é um bug conhecido do Chrome/Android que às vezes trava o
+        // repintar da tela depois que o app fica em segundo plano por um
+        // tempo — o conteúdo está lá, só não é redesenhado na tela até
+        // algo "cutucar" o navegador (por isso rolar a tela resolve).
+        // Aqui a gente faz esse "cutucão" sozinho sempre que o app volta a
+        // ficar visível: força um reflow (sem recarregar a página, então
+        // não corre risco de perder uma gravação de vídeo em andamento).
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "visible") {
+            requestAnimationFrame(function () {
+              var raiz = document.getElementById("root");
+              if (!raiz) return;
+              var anterior = raiz.style.transform;
+              raiz.style.transform = "translateZ(0)";
+              void raiz.offsetHeight; // força o navegador a recalcular o layout agora
+              raiz.style.transform = anterior || "";
+            });
+          }
+        });
       })();
     </script>
 
