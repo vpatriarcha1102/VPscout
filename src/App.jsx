@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Home, Building2, Users, Calendar as CalendarIcon, Plus, X, ChevronRight,
-  Play, Check, Undo2, Trash2, Pencil, Clock, MapPin,
+  Play, Check, Undo2, Trash2, Pencil, SquarePen, Clock, MapPin,
   Shield, Trophy, Dumbbell, ArrowLeft, Circle, CheckCircle2, XCircle,
   AlertCircle, FileText, Target, Footprints, Star, Repeat, Award, SlidersHorizontal, BarChart3,
   CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap,
@@ -1088,6 +1088,102 @@ function UltimoJogoItem({ evento, data, nav }) {
   );
 }
 
+function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pendentes, data, vazio, onEditar }) {
+  const scrollRef = useRef(null);
+  const [pausado, setPausado] = useState(false);
+  const resumeTimer = useRef(null);
+
+  const linhas = [];
+  periodosComEventos.forEach((p) => {
+    if (periodosComEventos.length > 1) linhas.push({ tipo: "separador", periodo: p, key: `sep-${p}` });
+    ultimosPorPeriodo[p].forEach((ev) => linhas.push({ tipo: "evento", ev, key: ev.id }));
+  });
+  pendentes.forEach((it) => linhas.push({ tipo: "pendente", it, key: it.idTemp }));
+
+  const total = linhas.length;
+  const itens = total > 3 ? [...linhas, ...linhas] : linhas;
+  const altura = Math.min(4, Math.max(1, total)) * 40 + 8;
+
+  // Auto-scroll contínuo, igual ao carrossel de "Últimos jogos" — some pra
+  // cima devagar sozinho e pausa quando o dedo toca a lista.
+  useEffect(() => {
+    if (total <= 4) return;
+    const id = setInterval(() => {
+      const el = scrollRef.current;
+      if (!el || pausado) return;
+      el.scrollTop += 0.5;
+      const metade = el.scrollHeight / 2;
+      if (el.scrollTop >= metade) el.scrollTop -= metade;
+    }, 30);
+    return () => clearInterval(id);
+  }, [pausado, total]);
+
+  useEffect(() => () => { if (resumeTimer.current) clearTimeout(resumeTimer.current); }, []);
+
+  const pausar = () => {
+    setPausado(true);
+    if (resumeTimer.current) clearTimeout(resumeTimer.current);
+  };
+  const retomarEmBreve = () => {
+    if (resumeTimer.current) clearTimeout(resumeTimer.current);
+    resumeTimer.current = setTimeout(() => setPausado(false), 2500);
+  };
+
+  if (vazio) return <EmptyHint text="Nenhum evento registrado ainda." />;
+
+  return (
+    <div
+      ref={scrollRef}
+      className="overflow-y-auto relative flex flex-col gap-1.5"
+      style={{ maxHeight: altura, scrollbarWidth: "none" }}
+      onTouchStart={pausar}
+      onTouchEnd={retomarEmBreve}
+      onMouseDown={pausar}
+      onMouseUp={retomarEmBreve}
+    >
+      {itens.map((linha, i) => {
+        if (linha.tipo === "separador") {
+          return (
+            <div key={linha.key + "-" + i} className="flex items-center gap-2 my-1">
+              <div className="flex-1 h-px" style={{ background: C.line }} />
+              <span className="text-[10px] tracking-widest uppercase" style={{ color: C.textFaint }}>{linha.periodo}º Tempo</span>
+              <div className="flex-1 h-px" style={{ background: C.line }} />
+            </div>
+          );
+        }
+        if (linha.tipo === "pendente") {
+          const it = linha.it;
+          const at = it.atletaId ? data.atletas.find((x) => x.id === it.atletaId) : null;
+          const rotulo = { passe: "Passe", finalizacao: "Finalização", bola_parada: "Bola parada", drible: "Drible", falta: "Falta" }[it.tipo] || it.tipo;
+          return (
+            <div key={linha.key + "-" + i} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs shrink-0" style={{ background: C.surface, border: `1px dashed ${C.orange}` }}>
+              <span style={{ color: C.orange }}>⚠️ {at ? `${at.numero} · ${at.nome} — ` : ""}{rotulo} — requer revisão manual</span>
+              <span style={{ color: C.textFaint }}>P{it.periodoNumero}</span>
+            </div>
+          );
+        }
+        const ev = linha.ev;
+        const at = data.atletas.find((x) => x.id === ev.atletaId);
+        return (
+          <button
+            key={linha.key + "-" + i}
+            onClick={() => { pausar(); onEditar(ev); }}
+            className="flex items-center justify-between px-3 py-2 rounded-lg text-xs shrink-0 text-left"
+            style={{ background: C.surface }}
+          >
+            <span style={{ color: C.text }}>{at ? `${at.numero} · ${at.nome} — ` : ""}{acaoLabel(data, ev)}</span>
+            <span className="flex items-center gap-1.5">
+              {ev.periodoNumero && <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>}
+              <SquarePen size={11} color={C.textFaint} />
+            </span>
+          </button>
+        );
+      })}
+      <div className="pointer-events-none sticky bottom-0 h-4" style={{ background: `linear-gradient(180deg, transparent, ${C.bg})`, marginTop: -16 }} />
+    </div>
+  );
+}
+
 function UltimosJogosCarousel({ eventos, data, nav }) {
   const scrollRef = useRef(null);
   const [pausado, setPausado] = useState(false);
@@ -1457,7 +1553,7 @@ function agregarEstatisticasAtleta(data, atletaId) {
         stats.minutagemTotal += minutagemAtletaObj.segundosTotais;
         stats.jogosComMinutagem++;
       }
-      if (scout.destaques && scout.destaques[atletaId] != null) stats.notas.push(scout.destaques[atletaId]);
+      if (evs.length > 0 || minutagemAtletaObj) stats.notas.push(calcularNotaSugerida(scout, atletaId));
     } else {
       if (evs.length > 0) stats.treinos.add(eventoId);
     }
@@ -1785,11 +1881,12 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
 }
 
 
-            function AssistirVideoInline({ C, evento, scout, periodos }) {
+function AssistirVideoInline({ C, evento, scout, periodos }) {
   const [aberto, setAberto] = useState(false);
   const [urls, setUrls] = useState({});
   const [ativa, setAtiva] = useState(null);
   const [carregando, setCarregando] = useState(false);
+  const [minimizado, setMinimizado] = useState(false);
 
   const porPeriodo = periodos
     .map((p) => ({ periodo: p, segmentos: (scout.videosPorPeriodo?.[p.numero]?.segmentos || []).filter((s) => s.key) }))
@@ -1800,6 +1897,7 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
   const abrirSegmento = async (periodoNumero, seg) => {
     const chave = `p${periodoNumero}-s${seg.indice}`;
     setAtiva(chave);
+    setMinimizado(false);
     if (!urls[chave]) {
       setCarregando(true);
       try {
@@ -1809,6 +1907,8 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
       setCarregando(false);
     }
   };
+
+  const videoAberto = ativa && urls[ativa] && !minimizado;
 
   return (
     <div className="rounded-xl mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}`, overflow: "hidden" }}>
@@ -1829,9 +1929,40 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
             }))}
           </div>
           {carregando && <p className="text-center text-xs py-4" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
-          {ativa && urls[ativa] && (
-            <video src={urls[ativa]} controls playsInline className="w-full rounded-lg" style={{ maxHeight: 220 }} />
+          {ativa && urls[ativa] && minimizado && (
+            <button onClick={() => setMinimizado(false)} className="flex items-center gap-1.5 text-xs py-2" style={{ color: C.lime }}>
+              <Play size={12} fill={C.lime} /> Reabrir vídeo flutuante
+            </button>
           )}
+        </div>
+      )}
+
+      {/* Flutuante de verdade (position: fixed) — continua visível na tela
+          mesmo rolando a página pra marcar estatísticas mais abaixo,
+          porque não faz parte do fluxo normal da página, fica "por cima". */}
+      {videoAberto && (
+        <div
+          style={{
+            position: "fixed",
+            right: 12,
+            bottom: 84,
+            width: 168,
+            zIndex: 60,
+            background: "#000",
+            borderRadius: 12,
+            overflow: "hidden",
+            border: `1px solid ${C.line}`,
+            boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+          }}
+        >
+          <div className="flex items-center justify-between px-2 py-1" style={{ background: C.surface2 }}>
+            <span style={{ color: C.textFaint, fontSize: 9 }}>vídeo</span>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setMinimizado(true)} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>—</button>
+              <button onClick={() => setAtiva(null)} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>✕</button>
+            </div>
+          </div>
+          <video src={urls[ativa]} controls playsInline className="w-full block" style={{ maxHeight: 220 }} />
         </div>
       )}
     </div>
@@ -1849,6 +1980,7 @@ function ScoutJogo({ data, update, params, nav }) {
   const [finalizacaoAtletaPendente, setFinalizacaoAtletaPendente] = useState(null);
   const [bolaParadaExpandida, setBolaParadaExpandida] = useState(null);
   const [bolaParadaPendente, setBolaParadaPendente] = useState(null); // { categoriaKey, categoriaLabel, jogada, outcomes }
+  const [eventoEditando, setEventoEditando] = useState(null);
   const [positivoPendente, setPositivoPendente] = useState(null); // { variante, etapa: 'golQuestion'|'atleta' }
   const [confirmProximoTempo, setConfirmProximoTempo] = useState(false);
   const [subAntesDeAvancar, setSubAntesDeAvancar] = useState(false);
@@ -2347,40 +2479,61 @@ function ScoutJogo({ data, update, params, nav }) {
         </div>
 
         <CourtLine label="Últimos eventos" />
-        <div className="flex flex-col gap-1.5" style={{ maxHeight: 260, overflowY: "auto", scrollBehavior: "smooth" }} ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>
-          {ultimos.length === 0 && (scout.itensRevisaoPendentes || []).length === 0 && <EmptyHint text="Nenhum evento registrado ainda." />}
-          {periodosComEventos.map((p) => (
-            <React.Fragment key={p}>
-              {periodosComEventos.length > 1 && (
-                <div className="flex items-center gap-2 my-1">
-                  <div className="flex-1 h-px" style={{ background: C.line }} />
-                  <span className="text-[10px] tracking-widest uppercase" style={{ color: C.textFaint }}>{p}º Tempo</span>
-                  <div className="flex-1 h-px" style={{ background: C.line }} />
-                </div>
-              )}
-              {ultimosPorPeriodo[p].map((ev) => {
-                const at = data.atletas.find((x) => x.id === ev.atletaId);
-                return (
-                  <div key={ev.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface }}>
-                    <span style={{ color: C.text }}>{at ? `${at.numero} · ${at.nome} — ` : ""}{acaoLabel(data, ev)}</span>
-                    {ev.periodoNumero && <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>}
-                  </div>
-                );
-              })}
-            </React.Fragment>
-          ))}
-          {(scout.itensRevisaoPendentes || []).filter((it) => !it.excluido).slice(-4).reverse().map((it) => {
-            const at = it.atletaId ? data.atletas.find((x) => x.id === it.atletaId) : null;
-            const rotulo = { passe: "Passe", finalizacao: "Finalização", bola_parada: "Bola parada", drible: "Drible", falta: "Falta" }[it.tipo] || it.tipo;
-            return (
-              <div key={it.idTemp} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface, border: `1px dashed ${C.orange}` }}>
-                <span style={{ color: C.orange }}>⚠️ {at ? `${at.numero} · ${at.nome} — ` : ""}{rotulo} — requer revisão manual</span>
-                <span style={{ color: C.textFaint }}>P{it.periodoNumero}</span>
-              </div>
-            );
-          })}
-        </div>
+        <UltimosEventosCarousel
+          C={C}
+          periodosComEventos={periodosComEventos}
+          ultimosPorPeriodo={ultimosPorPeriodo}
+          pendentes={(scout.itensRevisaoPendentes || []).filter((it) => !it.excluido).slice(-4).reverse()}
+          data={data}
+          vazio={ultimos.length === 0 && (scout.itensRevisaoPendentes || []).length === 0}
+          onEditar={(ev) => setEventoEditando(ev)}
+        />
       </div>
+
+      {eventoEditando && (
+        <Modal title="Editar evento" onClose={() => setEventoEditando(null)}>
+          <p style={{ color: C.textMuted, fontSize: 12 }} className="mb-3">{acaoLabel(data, eventoEditando)}</p>
+          {"atletaId" in eventoEditando && (
+            <>
+              <p style={{ color: C.textFaint, fontSize: 11 }} className="mb-1.5">Trocar atleta:</p>
+              <div className="flex flex-col gap-1.5 mb-3" style={{ maxHeight: 200, overflowY: "auto" }}>
+                {participantes.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => {
+                      update((d) => {
+                        const s = d.scouts[evento.id];
+                        const alvo = s.eventosScout.find((e) => e.id === eventoEditando.id);
+                        if (alvo) alvo.atletaId = a.id;
+                        return d;
+                      });
+                      setEventoEditando(null);
+                    }}
+                    className="flex items-center justify-between px-3 py-2 rounded-lg text-xs"
+                    style={{ background: a.id === eventoEditando.atletaId ? C.limeDim : C.surface, border: `1px solid ${a.id === eventoEditando.atletaId ? C.lime : C.line}`, color: C.text }}
+                  >
+                    {a.numero} · {a.nome}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          <Btn
+            className="w-full"
+            style={{ color: C.red, borderColor: C.red }}
+            onClick={() => {
+              update((d) => {
+                const s = d.scouts[evento.id];
+                s.eventosScout = s.eventosScout.filter((e) => e.id !== eventoEditando.id);
+                return d;
+              });
+              setEventoEditando(null);
+            }}
+          >
+            <Trash2 size={14} /> Excluir evento
+          </Btn>
+        </Modal>
+      )}
 
       {variantePendente && (
         <Modal title={variantePendente.label} onClose={() => setVariantePendente(null)}>
@@ -2931,6 +3084,17 @@ function MelhoresMomentos({ C, evento, scout, periodos, atletas }) {
   if (lances.length === 0) return null;
 
   const labelPeriodo = (n) => periodos.find((p) => p.numero === n)?.label || `${n}º Tempo`;
+  // Cada tipo de bola parada tem seu próprio ícone — antes todas usavam o
+  // mesmo símbolo de "🔄" (troca), que parecia substituição até pra
+  // pênalti. Agora cada categoria tem um ícone que combina com a jogada.
+  const iconeBolaParada = (categoria = "") => {
+    if (/goleiro/i.test(categoria)) return "🧤";
+    if (/meio/i.test(categoria)) return "🔵";
+    if (/escanteio|lateral/i.test(categoria)) return "🚩";
+    if (/p[êe]nalti/i.test(categoria)) return "🔴";
+    if (/falta/i.test(categoria)) return "📍";
+    return "🔄";
+  };
   const labelLance = (ev) => {
     const at = ev.atletaId ? atletas.find((a) => a.id === ev.atletaId) : null;
     const nomeAt = at ? `${at.numero} · ${at.nome} — ` : "";
@@ -2939,7 +3103,7 @@ function MelhoresMomentos({ C, evento, scout, periodos, atletas }) {
     if (ev.acao === "assistencia") return `🎯 ${nomeAt}Assistência`;
     if (ev.acao === "finalizacao_time") return `${ev.lado === "contra" ? "🔻" : "🎯"} Finalização ${ev.lado === "contra" ? "contra" : "a favor"} — ${ev.variante}`;
     if (ev.acao === "falta") return `🟨 Falta ${ev.variante === "Cometida" ? "cometida" : "sofrida"}${nomeAt ? ` — ${nomeAt}` : ""}`;
-    if (ev.acao === "bola_parada") return `🔄 ${ev.categoria} a favor`;
+    if (ev.acao === "bola_parada") return `${iconeBolaParada(ev.categoria)} ${ev.categoria} a favor`;
     if (ev.acao === "positivo") return `⚡ ${nomeAt}Drible`;
     return ev.acao;
   };
@@ -3095,7 +3259,8 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
 
   const substituicoes = scout.eventosScout.filter((e) => e.acao === "substituicao");
   const bolasParadas = scout.eventosScout.filter((e) => e.acao === "bola_parada");
-  const destaquesOrdenados = Object.entries(scout.destaques || {}).map(([id, nota]) => ({ atleta: data.atletas.find((a) => a.id === id), nota })).filter((x) => x.atleta).sort((a, b) => b.nota - a.nota);
+  const participantesParaNota = atletas.filter((a) => (scout.minutagem?.[a.id]?.segundosTotais > 0) || scout.eventosScout.some((e) => e.atletaId === a.id));
+  const destaquesOrdenados = participantesParaNota.map((atleta) => ({ atleta, nota: calcularNotaSugerida(scout, atleta.id) })).sort((a, b) => b.nota - a.nota);
   const mvp = scout.mvpId ? data.atletas.find((a) => a.id === scout.mvpId) : null;
   const participantes = atletas.filter((a) => scout.minutagem?.[a.id] || scout.eventosScout.some((e) => e.atletaId === a.id));
 
@@ -3133,7 +3298,7 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm mb-2"
             style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}
           >
-            <Pencil size={14} /> Editar estatísticas (modo rápido / bolas paradas)
+            <SquarePen size={16} /> Editar estatísticas
           </button>
         )}
 
@@ -3425,9 +3590,10 @@ function RankingsScreen({ data }) {
       if (e.acao === "gol") porAtleta[e.atletaId].gols++;
       if (e.acao === "assistencia") porAtleta[e.atletaId].assistencias++;
     });
-    Object.entries(scout.destaques || {}).forEach(([atletaId, nota]) => {
+    const idsComParticipacaoNoJogo = new Set([...Object.keys(scout.minutagem || {}), ...(scout.eventosScout || []).filter((e) => e.atletaId).map((e) => e.atletaId)]);
+    idsComParticipacaoNoJogo.forEach((atletaId) => {
       porAtleta[atletaId] = porAtleta[atletaId] || { gols: 0, assistencias: 0, notas: [] };
-      porAtleta[atletaId].notas.push(nota);
+      porAtleta[atletaId].notas.push(calcularNotaSugerida(scout, atletaId));
     });
   });
 
