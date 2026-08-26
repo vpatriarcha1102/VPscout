@@ -55,6 +55,10 @@ export async function handler(event) {
         // página (inline), em vez de baixar/abrir numa aba separada.
         ResponseContentType: contentTypePorExtensao(videoKey),
         ResponseContentDisposition: "inline",
+        // Deixa o navegador guardar o vídeo em cache local depois da
+        // primeira vez que abre — reassistir fica instantâneo (não baixa
+        // de novo do R2), enquanto a URL assinada ainda for válida.
+        ResponseCacheControl: "private, max-age=7200, immutable",
       }),
       { expiresIn: EXPIRA_EM_SEGUNDOS }
     );
