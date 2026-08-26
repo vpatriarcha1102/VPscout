@@ -281,7 +281,12 @@ export async function handler(event) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: "gemini-3.6-flash",
+      // "pro" em vez de "flash" — modelo mais lento e mais caro por
+      // análise, mas com leitura de cena bem mais consistente e precisa
+      // em lances de bola parada/finalizações que o "flash" vinha errando.
+      // Se quiser voltar pro modo mais rápido/barato, troque de volta pra
+      // "gemini-3.6-flash".
+      model: "gemini-3.6-pro",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: EVENTOS_SCHEMA,
