@@ -208,10 +208,20 @@ function calcularNotaSugerida(scout, atletaId) {
     if (e.acao === "gol") nota += 0.6;
     if (e.acao === "assistencia") nota += 0.4;
     if (e.acao === "defesa") nota += 0.2;
-    if (e.acao === "erro") nota += e.variante === "Gerou gol adversário" ? -0.6 : -0.3;
-    if (e.acao === "cartao") nota += e.variante === "Vermelho" ? -0.4 : -0.2;
+    if (e.acao === "positivo") nota += 0.15;
+    if (e.acao === "passe") nota += e.variante === "Errado" ? -0.1 : 0.05;
+    if (e.acao === "falta") nota += e.variante === "Cometida" ? -0.15 : 0.05;
+    if (e.acao === "erro") {
+      if (e.variante === "Gerou gol adversário") nota += -0.6;
+      else if (e.variante === "Gerou chance perigosa") nota += -0.4;
+      else nota += -0.25;
+    }
+    if (e.acao === "cartao") nota += e.variante === "Vermelho" ? -0.6 : -0.25;
   });
-  nota = Math.max(6, Math.min(10, nota));
+  // Sem piso artificial em 6 — quem só cometeu erros e não produziu nada
+  // positivo deve ter isso refletido na nota. Piso mínimo de 2 evita notas
+  // absurdas em jogos com poucos eventos registrados.
+  nota = Math.max(2, Math.min(10, nota));
   return Math.round(nota * 2) / 2;
 }
 
@@ -1820,7 +1830,7 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
           </div>
           {carregando && <p className="text-center text-xs py-4" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
           {ativa && urls[ativa] && (
-            <video src={urls[ativa]} controls className="w-full rounded-lg" style={{ maxHeight: 220 }} />
+            <video src={urls[ativa]} controls playsInline className="w-full rounded-lg" style={{ maxHeight: 220 }} />
           )}
         </div>
       )}
@@ -2035,6 +2045,15 @@ function ScoutJogo({ data, update, params, nav }) {
 
   const finalizacoesCount = (key) => scout.eventosScout.filter((e) => e.acao === "finalizacao_time" && e.variante === key && (e.lado || "pro") === ladoFinalizacao && e.periodoNumero === scout.periodoAtual).length;
   const ultimos = [...scout.eventosScout].slice(-6).reverse();
+  // Agrupa por tempo (1º/2º) pra mostrar com separador visual — mais fácil
+  // de visualizar o que aconteceu em cada período sem misturar tudo numa
+  // lista só corrida.
+  const ultimosPorPeriodo = ultimos.reduce((acc, ev) => {
+    const p = ev.periodoNumero || 1;
+    (acc[p] = acc[p] || []).push(ev);
+    return acc;
+  }, {});
+  const periodosComEventos = Object.keys(ultimosPorPeriodo).map(Number).sort((a, b) => b - a);
   const periodoAtualObj = periodos.find((p) => p.numero === scout.periodoAtual) || periodos[0];
   const placarPorPeriodo = periodos.map((p) => ({
     ...p,
@@ -2328,17 +2347,28 @@ function ScoutJogo({ data, update, params, nav }) {
         </div>
 
         <CourtLine label="Últimos eventos" />
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5" style={{ maxHeight: 260, overflowY: "auto", scrollBehavior: "smooth" }} ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>
           {ultimos.length === 0 && (scout.itensRevisaoPendentes || []).length === 0 && <EmptyHint text="Nenhum evento registrado ainda." />}
-          {ultimos.map((ev) => {
-            const at = data.atletas.find((x) => x.id === ev.atletaId);
-            return (
-              <div key={ev.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface }}>
-                <span style={{ color: C.text }}>{at ? `${at.numero} · ${at.nome} — ` : ""}{acaoLabel(data, ev)}</span>
-                {ev.periodoNumero && <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>}
-              </div>
-            );
-          })}
+          {periodosComEventos.map((p) => (
+            <React.Fragment key={p}>
+              {periodosComEventos.length > 1 && (
+                <div className="flex items-center gap-2 my-1">
+                  <div className="flex-1 h-px" style={{ background: C.line }} />
+                  <span className="text-[10px] tracking-widest uppercase" style={{ color: C.textFaint }}>{p}º Tempo</span>
+                  <div className="flex-1 h-px" style={{ background: C.line }} />
+                </div>
+              )}
+              {ultimosPorPeriodo[p].map((ev) => {
+                const at = data.atletas.find((x) => x.id === ev.atletaId);
+                return (
+                  <div key={ev.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs" style={{ background: C.surface }}>
+                    <span style={{ color: C.text }}>{at ? `${at.numero} · ${at.nome} — ` : ""}{acaoLabel(data, ev)}</span>
+                    {ev.periodoNumero && <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>}
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          ))}
           {(scout.itensRevisaoPendentes || []).filter((it) => !it.excluido).slice(-4).reverse().map((it) => {
             const at = it.atletaId ? data.atletas.find((x) => x.id === it.atletaId) : null;
             const rotulo = { passe: "Passe", finalizacao: "Finalização", bola_parada: "Bola parada", drible: "Drible", falta: "Falta" }[it.tipo] || it.tipo;
@@ -2659,35 +2689,40 @@ function RevisaoIA({ data, update, params, nav }) {
           <EmptyHint text="Nenhum vídeo foi gravado nesta partida." />
         ) : (
           <>
-            <div className="flex gap-1.5 mb-3 flex-wrap">
+            {/* Fixo no topo da tela (sticky) — o vídeo desce junto com a
+                rolagem, então dá pra ver o lance enquanto seleciona a
+                estatística mais abaixo, sem perder o vídeo de vista. */}
+            <div style={{ position: "sticky", top: 0, zIndex: 20, background: C.bg, paddingTop: 4, paddingBottom: 8, marginBottom: 8 }}>
+              <div className="flex gap-1.5 mb-2 flex-wrap">
+                {segmentosComVideo.map((seg) => {
+                  const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
+                  const pendentesDoSegmento = itens.filter((it) => !it.excluido && !it.confirmado && it.periodoNumero === seg.periodoNumero && it.segmentoIndice === seg.indice).length;
+                  return (
+                    <button key={`p${seg.periodoNumero}-s${seg.indice}`} onClick={() => setSegmentoAtivo({ periodoNumero: seg.periodoNumero, indice: seg.indice })} className="py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: ativo ? C.limeDim : C.surface, border: `1px solid ${ativo ? C.lime : C.line}`, color: ativo ? C.lime : C.textMuted }}>
+                      {seg.analiseStatus === "processando" && <Loader2 size={12} className="animate-spin" />}
+                      {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} color={pendentesDoSegmento > 0 ? C.orange : C.lime} />}
+                      {seg.analiseStatus === "erro" && <AlertTriangle size={12} color={C.red} />}
+                      {seg.periodoLabel} · trecho {seg.indice + 1}
+                      {seg.analiseStatus === "concluido" && pendentesDoSegmento > 0 && <span style={{ color: C.orange }}>⚠️ {pendentesDoSegmento}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+
               {segmentosComVideo.map((seg) => {
+                const chave = `p${seg.periodoNumero}-s${seg.indice}`;
                 const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
-                const pendentesDoSegmento = itens.filter((it) => !it.excluido && !it.confirmado && it.periodoNumero === seg.periodoNumero && it.segmentoIndice === seg.indice).length;
                 return (
-                  <button key={`p${seg.periodoNumero}-s${seg.indice}`} onClick={() => setSegmentoAtivo({ periodoNumero: seg.periodoNumero, indice: seg.indice })} className="py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5" style={{ background: ativo ? C.limeDim : C.surface, border: `1px solid ${ativo ? C.lime : C.line}`, color: ativo ? C.lime : C.textMuted }}>
-                    {seg.analiseStatus === "processando" && <Loader2 size={12} className="animate-spin" />}
-                    {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} color={pendentesDoSegmento > 0 ? C.orange : C.lime} />}
-                    {seg.analiseStatus === "erro" && <AlertTriangle size={12} color={C.red} />}
-                    {seg.periodoLabel} · trecho {seg.indice + 1}
-                    {seg.analiseStatus === "concluido" && pendentesDoSegmento > 0 && <span style={{ color: C.orange }}>⚠️ {pendentesDoSegmento}</span>}
-                  </button>
+                  <div key={chave} className="rounded-xl overflow-hidden" style={{ background: "#000", border: `1px solid ${C.line}`, display: ativo ? "block" : "none" }}>
+                    {erroVideoPorSegmento[chave] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorSegmento[chave]}</p>}
+                    {!erroVideoPorSegmento[chave] && !videoUrls[chave] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
+                    {videoUrls[chave] && (
+                      <video ref={(el) => { videoRefs.current[chave] = el; }} src={videoUrls[chave]} controls playsInline preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
+                    )}
+                  </div>
                 );
               })}
             </div>
-
-            {segmentosComVideo.map((seg) => {
-              const chave = `p${seg.periodoNumero}-s${seg.indice}`;
-              const ativo = segmentoAtivo?.periodoNumero === seg.periodoNumero && segmentoAtivo?.indice === seg.indice;
-              return (
-                <div key={chave} className="rounded-xl overflow-hidden mb-3" style={{ background: "#000", border: `1px solid ${C.line}`, display: ativo ? "block" : "none" }}>
-                  {erroVideoPorSegmento[chave] && <p className="text-center py-6 text-xs" style={{ color: C.red }}>{erroVideoPorSegmento[chave]}</p>}
-                  {!erroVideoPorSegmento[chave] && !videoUrls[chave] && <p className="text-center py-6 text-xs" style={{ color: C.textMuted }}>Carregando vídeo…</p>}
-                  {videoUrls[chave] && (
-                    <video ref={(el) => { videoRefs.current[chave] = el; }} src={videoUrls[chave]} controls preload="metadata" className="w-full" style={{ maxHeight: 220 }} />
-                  )}
-                </div>
-              );
-            })}
 
             {segmentosProcessando.length > 0 ? (
               <div className="rounded-xl p-4 mb-3 flex flex-col items-center gap-1.5" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
@@ -2766,11 +2801,38 @@ function RevisaoIA({ data, update, params, nav }) {
                             </div>
                           )}
 
-                          {it.tipo === "bola_parada" && (
-                            <p style={{ color: C.text, fontSize: 12 }}>
-                              {{ escanteio: "Escanteio", lateral: "Lateral ofensivo", falta_cobrada: "Falta cobrada", penalti: "Pênalti" }[it.categoriaBolaParada] || "Bola parada"} a favor — a jogada específica fica pra você completar depois, se quiser, direto no relatório.
-                            </p>
-                          )}
+                          {it.tipo === "bola_parada" && (() => {
+                            const chuteInicial = { penalti: "penalti", falta_cobrada: "falta", lateral: "escanteio", escanteio: "escanteio" }[it.categoriaBolaParada] || "escanteio";
+                            const categoriaKey = it.categoriaKeyManual || chuteInicial;
+                            const categoriaObj = BOLAS_PARADAS.find((c) => c.key === categoriaKey) || BOLAS_PARADAS[0];
+                            return (
+                              <div className="flex flex-col gap-1.5">
+                                <p style={{ color: C.orange, fontSize: 10 }}>⚠️ A IA identificou uma bola parada, mas não sabe qual foi a jogada ensaiada — selecione abaixo.</p>
+                                <select
+                                  value={categoriaKey}
+                                  onChange={(e) => {
+                                    const novaCat = BOLAS_PARADAS.find((c) => c.key === e.target.value);
+                                    atualizarItem(it.idTemp, { categoriaKeyManual: novaCat.key, categoriaLabelManual: novaCat.label, jogada: novaCat.jogadas ? "" : novaCat.label });
+                                  }}
+                                  className="rounded-lg px-2 py-1.5 text-xs"
+                                  style={{ background: C.surface, color: C.text, border: `1px solid ${C.line}` }}
+                                >
+                                  {BOLAS_PARADAS.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+                                </select>
+                                {categoriaObj.jogadas && (
+                                  <select
+                                    value={it.jogada || ""}
+                                    onChange={(e) => atualizarItem(it.idTemp, { jogada: e.target.value })}
+                                    className="rounded-lg px-2 py-1.5 text-xs"
+                                    style={{ background: C.surface, color: it.jogada ? C.text : C.orange, border: `1px solid ${C.line}` }}
+                                  >
+                                    <option value="">Qual jogada foi usada?</option>
+                                    {categoriaObj.jogadas.map((j) => <option key={j} value={j}>{j}</option>)}
+                                  </select>
+                                )}
+                              </div>
+                            );
+                          })()}
 
                           {it.lado === "pro" && (it.tipo === "passe" || it.tipo === "finalizacao" || it.tipo === "drible" || it.tipo === "falta") && (
                             <div className="flex items-center gap-2">
@@ -2924,6 +2986,7 @@ function MelhoresMomentosBody({ C, lances, labelPeriodo, labelLance, abertoId, u
                 <video
                   src={`${urls[chave]}#t=${Math.max(0, ev.timestampSeg - 2)}`}
                   controls
+                  playsInline
                   autoPlay
                   className="w-full rounded-lg mt-2"
                   style={{ maxHeight: 200 }}
@@ -2981,7 +3044,7 @@ function VideosDaPartida({ C, evento, scout, periodos }) {
                       </button>
                     </div>
                     {abertoChave === chave && urls[chave] && (
-                      <video src={urls[chave]} controls autoPlay className="w-full rounded-lg mt-2" style={{ maxHeight: 220 }} />
+                      <video src={urls[chave]} controls playsInline autoPlay className="w-full rounded-lg mt-2" style={{ maxHeight: 220 }} />
                     )}
                   </div>
                 );
@@ -3048,7 +3111,25 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
 
         {!readOnly && (
           <button
-            onClick={() => nav("scout-jogo", { id: evento.id, forcarEtapa: "ao_vivo" })}
+            onClick={() => {
+              // Quando o jogo é finalizado, "concluir()" zera o entradaEmSeg
+              // de todo mundo (pra fechar a minutagem certinho). Isso fazia
+              // a tela de edição achar que "ninguém está em quadra". Aqui a
+              // gente restaura entradaEmSeg pra quem já tinha minutagem
+              // registrada, só pra poder editar de novo — não soma minutos
+              // extras porque o cronômetro não volta a rodar sozinho.
+              update((d) => {
+                const s = d.scouts[evento.id];
+                const totalAgora = tempoTotalAtual(s.cronometro);
+                Object.keys(s.minutagem || {}).forEach((id) => {
+                  if (s.minutagem[id].entradaEmSeg == null) {
+                    s.minutagem[id].entradaEmSeg = totalAgora;
+                  }
+                });
+                return d;
+              });
+              nav("scout-jogo", { id: evento.id, forcarEtapa: "ao_vivo" });
+            }}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm mb-2"
             style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}
           >
