@@ -37,6 +37,13 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
       const periodoNumero = Number(periodoStr);
       (v.segmentos || []).forEach((seg) => {
         const chave = `p${periodoNumero}-s${seg.indice}`;
+        // Se o status não é "processando" nem "concluido" (por exemplo,
+        // foi resetado pra "idle" pelo botão "Tentar analisar de novo"),
+        // esquece que essa chave já tinha sido iniciada antes — senão o
+        // retry nunca dispararia de novo.
+        if (seg.analiseStatus !== "processando" && seg.analiseStatus !== "concluido") {
+          iniciadosRef.current.delete(chave);
+        }
         if (!seg.key || seg.analiseStatus === "processando" || seg.analiseStatus === "concluido") return;
         if (iniciadosRef.current.has(chave)) return;
         iniciadosRef.current.add(chave);
@@ -45,7 +52,7 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
         update((d) => {
           const s = d.scouts[evento.id];
           const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
-          if (alvo) { alvo.analiseStatus = "processando"; alvo.analiseErro = null; }
+          if (alvo) { alvo.analiseStatus = "processando"; alvo.analiseErro = null; alvo.analiseIniciadaEm = Date.now(); }
           return d;
         });
 
@@ -84,6 +91,19 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
       });
       for (const { periodoNumero, seg } of pendentes) {
         const partidaId = `${evento.id}_p${periodoNumero}_s${seg.indice}`;
+        // Trava de segurança: se ficar "processando" por mais de 5 minutos
+        // (o servidor já desiste sozinho aos 3), marca erro aqui também —
+        // evita que a tela fique girando pra sempre se, por algum motivo,
+        // a resposta do servidor nunca chegar de volta.
+        if (seg.analiseIniciadaEm && Date.now() - seg.analiseIniciadaEm > 5 * 60 * 1000) {
+          update((d) => {
+            const s = d.scouts[evento.id];
+            const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
+            if (alvo) { alvo.analiseStatus = "erro"; alvo.analiseErro = "A análise demorou demais e foi cancelada. Tente regravar esse trecho."; }
+            return d;
+          });
+          continue;
+        }
         try {
           const st = await service.consultarStatus(partidaId);
           if (st.status === "concluido") {
@@ -93,7 +113,7 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
               const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
               if (alvo) { alvo.analiseStatus = "concluido"; alvo.analiseAtualizadaEm = Date.now(); }
               // Auto-aplica os confiáveis direto nas estatísticas...
-              aplicarEventosConfirmados(s, itens, uid);
+              aplicarEventosConfirmados(s, itens, uid, atletas);
               // ...e guarda o resto (incerto) pra revisão manual no fim.
               const pendentesRestantes = itens.filter((it) => !it.confirmado);
               s.itensRevisaoPendentes = [...(s.itensRevisaoPendentes || []), ...pendentesRestantes];

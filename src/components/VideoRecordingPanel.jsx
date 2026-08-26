@@ -15,13 +15,40 @@ function formatMMSS(totalSeg) {
   return `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
-export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnviado }) {
+function AguardandoPermissao({ C }) {
+  const [tempoPreso, setTempoPreso] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTempoPreso((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <p className="text-center text-xs" style={{ color: C.textMuted }}>Aguardando permissão de câmera/microfone…</p>
+      {tempoPreso >= 10 && (
+        <div className="flex flex-col items-center gap-2 mt-1">
+          <p className="text-center text-xs" style={{ color: C.orange }}>
+            Demorando muito? Confira se o Chrome não bloqueou a câmera pra este site (toque no ícone de cadeado/informações ao lado do endereço → Permissões → Câmera e Microfone → Permitir).
+          </p>
+          <button onClick={() => window.location.reload()} className="text-xs underline" style={{ color: C.textMuted }}>
+            Recarregar o app
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado }) {
   const rec = useVideoRecorder();
   const [mostrarDicas, setMostrarDicas] = useState(false);
   const [segmentos, setSegmentos] = useState([]); // [{ indice, status, progresso, erro }]
   const fileInputRef = useRef(null);
   const modoRef = useRef("parado"); // "gravando" | "rotacionando" | "finalizando" | "parado"
-  const proximoIndiceRef = useRef(0);
+  // Começa do número de trechos que JÁ existem pra este período (persistido
+  // no scout) — nunca reinicia em 0 ao regravar, senão um novo trecho
+  // "trecho 1" colide com um trecho 1 anterior e a análise se confunde
+  // entre os dois vídeos diferentes.
+  const proximoIndiceRef = useRef(indiceInicial);
   const cronometroTotalRef = useRef(0); // soma dos segmentos já concluídos, pro relógio não voltar a 00:00
 
   const enviarSegmento = (blob, indice) => {
@@ -79,7 +106,6 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
   }, [rec.status, rec.videoBlob]);
 
   const iniciarGravacao = () => {
-    proximoIndiceRef.current = 0;
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "gravando";
@@ -92,7 +118,6 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
   };
 
   const importarDaGaleria = (file) => {
-    proximoIndiceRef.current = 0;
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "finalizando";
@@ -100,7 +125,6 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
   };
 
   const regravar = () => {
-    proximoIndiceRef.current = 0;
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "parado";
@@ -166,9 +190,7 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
         </div>
       )}
 
-      {rec.status === "pedindo_permissao" && (
-        <p className="text-center text-xs" style={{ color: C.textMuted }}>Aguardando permissão de câmera/microfone…</p>
-      )}
+      {rec.status === "pedindo_permissao" && <AguardandoPermissao C={C} />}
 
       {(rec.status === "gravando" || (rec.status === "finalizado" && modoRef.current === "rotacionando")) && (
         <div className="flex flex-col items-center gap-3">
@@ -211,8 +233,12 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, onSegmentoEnvi
           )}
 
           {algumErro && (
-            <div className="flex items-center gap-1.5" style={{ color: C.red, fontSize: 12, textAlign: "center" }}>
-              <AlertTriangle size={14} /> Um ou mais trechos falharam ao enviar. Tente regravar essa parte.
+            <div className="flex flex-col items-center gap-1 px-2" style={{ color: C.red, fontSize: 12, textAlign: "center" }}>
+              <span className="flex items-center gap-1.5"><AlertTriangle size={14} /> Um ou mais trechos falharam ao enviar.</span>
+              {segmentos.filter((s) => s.status === "erro" && s.erro).map((s) => (
+                <span key={s.indice} style={{ fontSize: 10, color: C.textMuted, fontFamily: "monospace" }}>trecho {s.indice + 1}: {s.erro}</span>
+              ))}
+              <span style={{ fontSize: 10 }}>Tente regravar essa parte.</span>
             </div>
           )}
 
