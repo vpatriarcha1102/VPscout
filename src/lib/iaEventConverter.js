@@ -98,7 +98,7 @@ function varianteFinalizacao(resultado) {
 // na conta individual do atleta (quando identificado).
 // Time "contra" (adversário): entram SÓ na conta da equipe — nunca temos
 // atletaId do adversário porque só cadastramos os próprios atletas.
-export function aplicarEventosConfirmados(scout, itens, uid) {
+export function aplicarEventosConfirmados(scout, itens, uid, atletas = []) {
   const validos = itens.filter((it) => !it.excluido && it.confirmado);
   const agora = Date.now();
 
@@ -215,6 +215,29 @@ export function aplicarEventosConfirmados(scout, itens, uid) {
           fonte: "ia",
           confianca: it.confianca,
         });
+      }
+
+      // Finalização do adversário que o goleiro defendeu: credita a
+      // defesa ao goleiro que estava em quadra, igual já acontecia no
+      // fluxo manual (sem isso, "Defesa do goleiro" só contava pro total
+      // da equipe e nunca aparecia na estatística individual dele).
+      if (lado === "contra" && it.resultado === "defendida") {
+        const emQuadraAgora = new Set(Object.entries(scout.minutagem || {}).filter(([, m]) => m.entradaEmSeg != null).map(([id]) => id));
+        const gk = atletas.find((a) => a.posicao === "Goleiro" && emQuadraAgora.has(a.id));
+        if (gk) {
+          scout.eventosScout.push({
+            id: uid(),
+            acao: "defesa",
+            atletaId: gk.id,
+            variante: null,
+            periodoNumero,
+            segmentoIndice: it.segmentoIndice,
+            timestampSeg: it.timestampSeg,
+            ts: agora,
+            fonte: "ia",
+            confianca: it.confianca,
+          });
+        }
       }
 
       if (it.resultado === "gol") {
