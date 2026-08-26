@@ -178,6 +178,13 @@ por vídeo, seja MUITO conservador:
   adversário cometeu (nós sofremos).
 - atletaNumero: só preencha se lado="pro" e você conseguir identificar
   claramente quem cometeu a falta; senão deixe null.
+
+Consistência: se você assistisse a este mesmo vídeo de novo do zero, sua
+resposta deveria ser praticamente idêntica a esta. Não varie a leitura da
+cena por acaso — baseie cada evento estritamente no que é visualmente
+verificável, e mantenha os mesmos critérios de decisão (principalmente os
+critérios de "resultado" da finalização e de pistaSonora/comemoracaoClara)
+do início ao fim da análise.
 `.trim();
 }
 
