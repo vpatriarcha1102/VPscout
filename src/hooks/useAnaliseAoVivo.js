@@ -37,6 +37,13 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
       const periodoNumero = Number(periodoStr);
       (v.segmentos || []).forEach((seg) => {
         const chave = `p${periodoNumero}-s${seg.indice}`;
+        // Se o status não é "processando" nem "concluido" (por exemplo,
+        // foi resetado pra "idle" pelo botão "Tentar analisar de novo"),
+        // esquece que essa chave já tinha sido iniciada antes — senão o
+        // retry nunca dispararia de novo.
+        if (seg.analiseStatus !== "processando" && seg.analiseStatus !== "concluido") {
+          iniciadosRef.current.delete(chave);
+        }
         if (!seg.key || seg.analiseStatus === "processando" || seg.analiseStatus === "concluido") return;
         if (iniciadosRef.current.has(chave)) return;
         iniciadosRef.current.add(chave);
@@ -106,7 +113,7 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
               const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
               if (alvo) { alvo.analiseStatus = "concluido"; alvo.analiseAtualizadaEm = Date.now(); }
               // Auto-aplica os confiáveis direto nas estatísticas...
-              aplicarEventosConfirmados(s, itens, uid);
+              aplicarEventosConfirmados(s, itens, uid, atletas);
               // ...e guarda o resto (incerto) pra revisão manual no fim.
               const pendentesRestantes = itens.filter((it) => !it.confirmado);
               s.itensRevisaoPendentes = [...(s.itensRevisaoPendentes || []), ...pendentesRestantes];
