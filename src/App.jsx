@@ -198,6 +198,118 @@ function useEmojiClima() {
   return emoji;
 }
 
+// Mapa com a rota embutido direto na tela do jogo — 100% gratuito, sem
+// chave de API e sem precisar de cartão de crédito cadastrado em lugar
+// nenhum (o Google exige cartão até pra APIs "grátis"). Usa:
+//   • OpenStreetMap — os "quadradinhos" visuais do mapa
+//   • Nominatim — transforma o endereço do jogo em latitude/longitude
+//   • OSRM (demo pública) — calcula a rota entre dois pontos
+//   • Leaflet — biblioteca que desenha tudo isso na tela (carregada via
+//     CDN, sem precisar instalar nada no projeto)
+let leafletCarregando = null;
+function carregarLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  if (leafletCarregando) return leafletCarregando;
+  leafletCarregando = new Promise((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+    document.head.appendChild(link);
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+    script.onload = () => resolve(window.L);
+    script.onerror = reject;
+    document.body.appendChild(script);
+  });
+  return leafletCarregando;
+}
+
+function MapaRota({ destino }) {
+  const divRef = useRef(null);
+  const mapaRef = useRef(null);
+  const [status, setStatus] = useState("carregando"); // carregando | pronto | erro
+
+  useEffect(() => {
+    let cancelado = false;
+
+    (async () => {
+      try {
+        const L = await carregarLeaflet();
+        if (cancelado || !divRef.current) return;
+
+        // 1) Endereço do jogo → coordenadas (Nominatim, gratuito)
+        const geo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(destino)}`).then((r) => r.json());
+        if (cancelado) return;
+        if (!geo?.[0]) { setStatus("erro"); return; }
+        const destLat = parseFloat(geo[0].lat), destLon = parseFloat(geo[0].lon);
+
+        // 2) Localização atual (se a pessoa permitir)
+        const origem = await new Promise((resolve) => {
+          if (!("geolocation" in navigator)) return resolve(null);
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+            () => resolve(null),
+            { timeout: 6000, maximumAge: 5 * 60 * 1000 }
+          );
+        });
+        if (cancelado || !divRef.current) return;
+
+        // Monta o mapa
+        if (mapaRef.current) { mapaRef.current.remove(); mapaRef.current = null; }
+        const mapa = L.map(divRef.current, { attributionControl: true });
+        mapaRef.current = mapa;
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OpenStreetMap",
+          maxZoom: 19,
+        }).addTo(mapa);
+        L.marker([destLat, destLon]).addTo(mapa).bindPopup("Local do jogo");
+
+        // 3) Rota (OSRM) — só se a gente tiver a localização de origem
+        if (origem) {
+          L.marker([origem.lat, origem.lon]).addTo(mapa).bindPopup("Você está aqui");
+          try {
+            const rota = await fetch(`https://router.project-osrm.org/route/v1/driving/${origem.lon},${origem.lat};${destLon},${destLat}?overview=full&geometries=geojson`).then((r) => r.json());
+            const coords = rota?.routes?.[0]?.geometry?.coordinates;
+            if (coords && !cancelado) {
+              const linha = coords.map(([lon, lat]) => [lat, lon]);
+              const poly = L.polyline(linha, { color: "#2DE0F0", weight: 4 }).addTo(mapa);
+              mapa.fitBounds(poly.getBounds(), { padding: [24, 24] });
+            } else {
+              mapa.fitBounds([[destLat, destLon], [origem.lat, origem.lon]], { padding: [24, 24] });
+            }
+          } catch {
+            mapa.fitBounds([[destLat, destLon], [origem.lat, origem.lon]], { padding: [24, 24] });
+          }
+        } else {
+          mapa.setView([destLat, destLon], 15);
+        }
+
+        if (!cancelado) setStatus("pronto");
+      } catch {
+        if (!cancelado) setStatus("erro");
+      }
+    })();
+
+    return () => {
+      cancelado = true;
+      if (mapaRef.current) { mapaRef.current.remove(); mapaRef.current = null; }
+    };
+  }, [destino]);
+
+  if (status === "erro") return null; // não achou o endereço no mapa — some sem quebrar nada
+
+  return (
+    <div className="rounded-xl overflow-hidden mt-3 relative" style={{ border: `1px solid ${C.line}`, height: 200 }}>
+      {status === "carregando" && (
+        <div className="absolute inset-0 flex items-center justify-center" style={{ background: C.surface2, zIndex: 1 }}>
+          <p style={{ color: C.textMuted, fontSize: 12 }}>Carregando mapa…</p>
+        </div>
+      )}
+      <div ref={divRef} className="w-full h-full" />
+    </div>
+  );
+}
+
 const STORAGE_KEY = "futsal-data-v1";
 
 const emptyState = () => ({
@@ -1872,12 +1984,15 @@ function EventoDetalhe({ data, update, params, nav, readOnly }) {
         })()}
 
         {evento.local && (
-          <Btn
-            className="w-full mt-3"
-            onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(evento.local)}`, "_blank")}
-          >
-            <MapPin size={16} /> Ver rota até o local
-          </Btn>
+          <>
+            <Btn
+              className="w-full mt-3"
+              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(evento.local)}`, "_blank")}
+            >
+              <MapPin size={16} /> Ver rota até o local
+            </Btn>
+            <MapaRota destino={evento.local} />
+          </>
         )}
         <div className="flex flex-col gap-2 mt-4">
           {evento.status === "finalizado" ? (
