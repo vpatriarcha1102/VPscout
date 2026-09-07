@@ -124,12 +124,80 @@ function resizeImageToDataURL(file, maxDim = 240) {
   });
 }
 
-function getSaudacao(nome) {
+function getSaudacao(nome, emojiClima) {
   const h = new Date().getHours();
-  if (h < 12) return `Bom dia, ${nome} ☀️`;
-  if (h < 18) return `Boa tarde, ${nome} 🌤`;
-  return `Boa noite, ${nome} 🌙`;
+  // Emoji padrão por horário (o mesmo de sempre) — só é trocado se a
+  // gente conseguir descobrir o clima de verdade (localização liberada).
+  const emojiPadrao = h < 12 ? "☀️" : h < 18 ? "🌤" : "🌙";
+  const emoji = emojiClima || emojiPadrao;
+  if (h < 12) return `Bom dia, ${nome} ${emoji}`;
+  if (h < 18) return `Boa tarde, ${nome} ${emoji}`;
+  return `Boa noite, ${nome} ${emoji}`;
 }
+
+// Traduz o código de clima da Open-Meteo (padrão internacional WMO) num
+// emoji. Retorna null pra qualquer situação que a gente não soube
+// traduzir — nesse caso getSaudacao() cai no emoji padrão por horário.
+function emojiPorCodigoClima(codigo, tempC, ehDia) {
+  if (codigo == null) return null;
+  if (codigo >= 95) return "⛈️";
+  if ((codigo >= 51 && codigo <= 67) || (codigo >= 80 && codigo <= 82)) return "🌧️";
+  if ((codigo >= 71 && codigo <= 77) || codigo === 85 || codigo === 86) return "❄️";
+  if (tempC != null && tempC <= 12) return "❄️";
+  if (codigo === 45 || codigo === 48) return "🌫️";
+  if (codigo === 3) return "⛅";
+  if (codigo === 0) return ehDia ? "☀️" : "🌙";
+  if (codigo === 1 || codigo === 2) return ehDia ? "🌤" : "🌙";
+  return null;
+}
+
+// Pede a localização (se a pessoa liberar) e busca o clima atual na
+// Open-Meteo (gratuita, sem precisar de chave/cadastro) pra decidir qual
+// emoji mostrar na saudação. Se a localização não estiver disponível, a
+// pessoa negar, ou a busca falhar por qualquer motivo, simplesmente não
+// atualiza nada — getSaudacao() já cai sozinho nos emojis padrão de
+// sempre (☀️ dia / 🌤 tarde / 🌙 noite).
+function useEmojiClima() {
+  const [emoji, setEmoji] = useState(null);
+
+  useEffect(() => {
+    if (!("geolocation" in navigator)) return;
+
+    // Evita pedir localização/buscar de novo toda vez que a pessoa abre
+    // o app — reaproveita por 30 minutos dentro da mesma sessão.
+    try {
+      const emCache = JSON.parse(sessionStorage.getItem("vps_clima_cache") || "null");
+      if (emCache && Date.now() - emCache.ts < 30 * 60 * 1000) {
+        setEmoji(emCache.emoji);
+        return;
+      }
+    } catch { /* ignora cache corrompido */ }
+
+    let cancelado = false;
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const { latitude, longitude } = pos.coords;
+          const resp = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code,is_day`);
+          if (!resp.ok) return;
+          const j = await resp.json();
+          const cur = j.current || {};
+          const calculado = emojiPorCodigoClima(cur.weather_code, cur.temperature_2m, cur.is_day === 1);
+          if (!cancelado && calculado) {
+            setEmoji(calculado);
+            try { sessionStorage.setItem("vps_clima_cache", JSON.stringify({ emoji: calculado, ts: Date.now() })); } catch { /* ignora */ }
+          }
+        } catch { /* sem internet, API fora do ar etc. — fica no emoji padrão */ }
+      },
+      () => { /* localização negada/indisponível — fica no emoji padrão */ },
+      { timeout: 5000, maximumAge: 30 * 60 * 1000 }
+    );
+    return () => { cancelado = true; };
+  }, []);
+
+  return emoji;
+}
+
 const STORAGE_KEY = "futsal-data-v1";
 
 const emptyState = () => ({
@@ -523,7 +591,7 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
   const isGoleiro = atleta.posicao === "Goleiro";
   const linhas = [
     ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
-    ...(isGoleiro ? [["Defesas", stats.defesas]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
+    ...(isGoleiro ? [["Defesas", stats.defesas], ["Gols", stats.gols], ["Assistências", stats.assistencias]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
     ["Precisão de passes", stats.precisaoPasses != null ? `${stats.precisaoPasses}%` : "—"],
     ["Precisão de finalizações", stats.precisaoFinalizacoes != null ? `${stats.precisaoFinalizacoes}%` : "—"],
@@ -896,6 +964,7 @@ export default function App() {
 function Dashboard({ data, nav, meuAtletaId }) {
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick((t) => t + 1), 60000); return () => clearInterval(id); }, []);
+  const emojiClima = useEmojiClima();
 
   const proximos = data.eventos.filter((e) => e.tipo === "jogo" && e.status !== "finalizado").sort((a, b) => new Date(a.data + "T" + (a.horario || "00:00")) - new Date(b.data + "T" + (b.horario || "00:00")));
   const ultimos = data.eventos.filter((e) => e.tipo === "jogo" && e.status === "finalizado").sort((a, b) => new Date(b.data + "T" + (b.horario || "00:00")) - new Date(a.data + "T" + (a.horario || "00:00")));
@@ -915,7 +984,7 @@ function Dashboard({ data, nav, meuAtletaId }) {
 
   return (
     <div>
-      <ScreenHeader title={getSaudacao(meuAtleta ? meuAtleta.nome : "Victor")} subtitle="Visão geral da temporada" />
+      <ScreenHeader title={getSaudacao(meuAtleta ? meuAtleta.nome : "Victor", emojiClima)} subtitle="Visão geral da temporada" />
       <div className="px-5">
         <div className="grid grid-cols-3 gap-2 mt-2">
           {meuAtletaId ? (
@@ -1438,7 +1507,9 @@ function Atletas({ data, update, nav }) {
   };
   const remove = (id) => update((d) => { d.atletas = d.atletas.filter((a) => a.id !== id); return d; });
   const toggleCategoria = (id) => setForm((f) => ({ ...f, categoriaIds: f.categoriaIds.includes(id) ? f.categoriaIds.filter((c) => c !== id) : [...f.categoriaIds, id] }));
-  const lista = data.atletas.filter((a) => !filtroCategoria || (a.categoriaIds || []).includes(filtroCategoria));
+  const lista = data.atletas
+    .filter((a) => !filtroCategoria || (a.categoriaIds || []).includes(filtroCategoria))
+    .sort((a, b) => POSICOES.indexOf(a.posicao) - POSICOES.indexOf(b.posicao));
 
   const onFotoChange = async (e) => {
     const file = e.target.files?.[0];
@@ -1584,7 +1655,7 @@ function AtletaPerfil({ data, update, params, nav, readOnly }) {
   };
   const linhas = [
     ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
-    ...(isGoleiro ? [["Defesas", stats.defesas]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
+    ...(isGoleiro ? [["Defesas", stats.defesas], ["Gols", stats.gols], ["Assistências", stats.assistencias]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
     ["Precisão de passes", stats.precisaoPasses != null ? `${stats.precisaoPasses}%` : "—"],
     ["Precisão de finalizações", stats.precisaoFinalizacoes != null ? `${stats.precisaoFinalizacoes}%` : "—"],
@@ -1720,7 +1791,20 @@ function CalendarioView({ data, update, nav, readOnly }) {
 /* ============================================================
    DETALHE DO EVENTO
    ============================================================ */
+// Atletas realmente relacionados a um evento: se o treinador já fez a
+// seleção manual (evento.relacionadosIds), respeita ela; senão, cai no
+// comportamento de sempre (todo mundo da categoria) — assim jogos
+// antigos, criados antes dessa função existir, continuam funcionando
+// exatamente como já funcionavam.
+function atletasRelacionados(data, evento) {
+  const daCategoria = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  if (!evento.relacionadosIds || evento.relacionadosIds.length === 0) return daCategoria;
+  return daCategoria.filter((a) => evento.relacionadosIds.includes(a.id));
+}
+
 function EventoDetalhe({ data, update, params, nav, readOnly }) {
+  const [modalRelacionados, setModalRelacionados] = useState(false);
+  const [selecaoTemp, setSelecaoTemp] = useState(null);
   const evento = data.eventos.find((e) => e.id === params.id);
   if (!evento) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const equipe = data.equipes.find((e) => e.id === evento.equipeId);
@@ -1765,13 +1849,18 @@ function EventoDetalhe({ data, update, params, nav, readOnly }) {
         </Card>
 
         {(() => {
-          const atletasCategoria = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
-          if (atletasCategoria.length === 0) return null;
+          const todosDaCategoria = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+          const relacionados = atletasRelacionados(data, evento);
+          if (todosDaCategoria.length === 0) return null;
           return (
             <>
-              <CourtLine label="Atletas relacionados" />
+              <div className="flex items-center justify-between mt-4 mb-1">
+                <span className="text-xs tracking-widest uppercase" style={{ color: C.textFaint, fontFamily: FONT_BODY }}>Atletas relacionados</span>
+                {!readOnly && <button onClick={() => setModalRelacionados(true)} className="flex items-center gap-1 text-xs font-semibold" style={{ color: C.lime }}><SquarePen size={13} /> Selecionar</button>}
+              </div>
+              {relacionados.length === 0 && <EmptyHint text="Nenhum atleta selecionado ainda." />}
               <div className="flex gap-2 overflow-x-auto pb-1">
-                {atletasCategoria.map((a) => (
+                {relacionados.map((a) => (
                   <div key={a.id} className="flex flex-col items-center gap-1 shrink-0" style={{ width: 56 }}>
                     <Avatar atleta={a} size={40} />
                     <span style={{ fontSize: 9, color: C.textMuted, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: 56 }}>{a.nome}</span>
@@ -1781,6 +1870,15 @@ function EventoDetalhe({ data, update, params, nav, readOnly }) {
             </>
           );
         })()}
+
+        {evento.local && (
+          <Btn
+            className="w-full mt-3"
+            onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(evento.local)}`, "_blank")}
+          >
+            <MapPin size={16} /> Ver rota até o local
+          </Btn>
+        )}
         <div className="flex flex-col gap-2 mt-4">
           {evento.status === "finalizado" ? (
             <Btn variant="primary" className="w-full" onClick={() => nav(isJogo ? "relatorio-jogo" : "relatorio-treino", { id: evento.id })}><FileText size={16} /> Ver relatório</Btn>
@@ -1792,6 +1890,48 @@ function EventoDetalhe({ data, update, params, nav, readOnly }) {
           {!readOnly && <Btn variant="danger" className="w-full" onClick={remover}><Trash2 size={16} /> Excluir</Btn>}
         </div>
       </div>
+
+      {modalRelacionados && (() => {
+        const todosDaCategoria = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+        const selecao = selecaoTemp || evento.relacionadosIds || todosDaCategoria.map((a) => a.id);
+        const toggle = (id) => setSelecaoTemp((sel) => {
+          const base = sel || selecao;
+          return base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+        });
+        return (
+          <Modal title="Selecionar relacionados" onClose={() => { setModalRelacionados(false); setSelecaoTemp(null); }}>
+            <p style={{ color: C.textMuted, fontSize: 12 }} className="mb-3">Marque quem realmente vai jogar essa partida. Desmarcados não aparecem pra seleção durante o scout.</p>
+            <div className="flex flex-col gap-1.5 mb-3" style={{ maxHeight: 320, overflowY: "auto" }}>
+              {todosDaCategoria.map((a) => {
+                const marcado = selecao.includes(a.id);
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => toggle(a.id)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-lg text-left"
+                    style={{ background: marcado ? C.limeDim : C.surface, border: `1px solid ${marcado ? C.lime : C.line}` }}
+                  >
+                    <Avatar atleta={a} size={32} />
+                    <span style={{ color: C.text, fontSize: 13, flex: 1 }}>{a.numero} · {a.nome}</span>
+                    {marcado && <Check size={16} color={C.lime} />}
+                  </button>
+                );
+              })}
+            </div>
+            <Btn
+              variant="primary"
+              className="w-full"
+              onClick={() => {
+                update((d) => { d.eventos.find((e) => e.id === evento.id).relacionadosIds = selecao; return d; });
+                setModalRelacionados(false);
+                setSelecaoTemp(null);
+              }}
+            >
+              Salvar seleção
+            </Btn>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
@@ -1981,6 +2121,15 @@ function ScoutJogo({ data, update, params, nav }) {
   const [bolaParadaExpandida, setBolaParadaExpandida] = useState(null);
   const [bolaParadaPendente, setBolaParadaPendente] = useState(null); // { categoriaKey, categoriaLabel, jogada, outcomes }
   const [eventoEditando, setEventoEditando] = useState(null);
+  // Guarda "em que ponto do vídeo a gravação está agora" (atualizado a
+  // cada segundo pelo VideoRecordingPanel). Fica em ref, não state, pra
+  // não re-renderizar a tela inteira todo segundo — só é lido na hora de
+  // criar um evento novo.
+  const videoTempoRef = useRef(null);
+  const carimboVideo = () => {
+    const t = videoTempoRef.current;
+    return t ? { timestampSeg: t.timestampSeg, segmentoIndice: t.segmentoIndice } : {};
+  };
   const [positivoPendente, setPositivoPendente] = useState(null); // { variante, etapa: 'golQuestion'|'atleta' }
   const [confirmProximoTempo, setConfirmProximoTempo] = useState(false);
   const [subAntesDeAvancar, setSubAntesDeAvancar] = useState(false);
@@ -2022,7 +2171,7 @@ function ScoutJogo({ data, update, params, nav }) {
 
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
-  const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  const atletas = atletasRelacionados(data, evento);
   const equipe = data.equipes.find((e) => e.id === evento.equipeId);
   const atletaAtivoObj = atletas.find((a) => a.id === atletaAtivo);
   const isGoleiroAtivo = atletaAtivoObj?.posicao === "Goleiro";
@@ -2031,13 +2180,14 @@ function ScoutJogo({ data, update, params, nav }) {
   const foraDeQuadra = atletas.filter((a) => !(scout.minutagem?.[a.id]?.entradaEmSeg != null));
 
   const registrar = (acaoKey, variante = null, extra = {}) => {
+    const carimbo = carimboVideo();
     update((d) => {
       const s = d.scouts[evento.id];
       const atletaId = extra.atletaId !== undefined ? extra.atletaId : atletaAtivo;
-      s.eventosScout.push({ id: uid(), acao: acaoKey, atletaId, variante, periodoNumero: s.periodoAtual, ts: Date.now(), ...extra });
-      if (acaoKey === "gol") { s.placarCasa++; s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "pro", periodoNumero: s.periodoAtual, ts: Date.now() }); }
-      if (acaoKey === "gol_adv") { s.placarVisitante++; s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now() }); }
-      if (acaoKey === "erro" && variante === "Gerou gol adversário") { s.placarVisitante++; s.eventosScout.push({ id: uid(), acao: "gol_adv", atletaId: null, variante: "Erro provocado", periodoNumero: s.periodoAtual, ts: Date.now() }); s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now() }); }
+      s.eventosScout.push({ id: uid(), acao: acaoKey, atletaId, variante, periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo, ...extra });
+      if (acaoKey === "gol") { s.placarCasa++; s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "pro", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); }
+      if (acaoKey === "gol_adv") { s.placarVisitante++; s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); }
+      if (acaoKey === "erro" && variante === "Gerou gol adversário") { s.placarVisitante++; s.eventosScout.push({ id: uid(), acao: "gol_adv", atletaId: null, variante: "Erro provocado", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); }
       return d;
     });
     setVariantePendente(null);
@@ -2065,9 +2215,10 @@ function ScoutJogo({ data, update, params, nav }) {
   };
   const onTapResultadoBolaParada = (resultado) => {
     const { categoriaKey, categoriaLabel, jogada } = bolaParadaPendente;
+    const carimbo = carimboVideo();
     update((d) => {
       const s = d.scouts[evento.id];
-      s.eventosScout.push({ id: uid(), acao: "bola_parada", atletaId: null, categoria: categoriaLabel, jogada, resultado, periodoNumero: s.periodoAtual, ts: Date.now() });
+      s.eventosScout.push({ id: uid(), acao: "bola_parada", atletaId: null, categoria: categoriaLabel, jogada, resultado, periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo });
       return d;
     });
     if (resultado === "Gerou gol adversário") {
@@ -2083,10 +2234,11 @@ function ScoutJogo({ data, update, params, nav }) {
   };
   const registrarDefesaContraGK = () => {
     const gk = emQuadra.find((a) => a.posicao === "Goleiro");
+    const carimbo = carimboVideo();
     update((d) => {
       const s = d.scouts[evento.id];
-      s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Defesa do goleiro", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now() });
-      if (gk) s.eventosScout.push({ id: uid(), acao: "defesa", atletaId: gk.id, variante: null, periodoNumero: s.periodoAtual, ts: Date.now() });
+      s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Defesa do goleiro", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo });
+      if (gk) s.eventosScout.push({ id: uid(), acao: "defesa", atletaId: gk.id, variante: null, periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo });
       return d;
     });
   };
@@ -2327,6 +2479,7 @@ function ScoutJogo({ data, update, params, nav }) {
             s.videosPorPeriodo[scout.periodoAtual] = atual;
             return d;
           })}
+          onTempoAtualizado={(t) => { videoTempoRef.current = t; }}
         />
         {Object.keys(scout.videosPorPeriodo || {}).length > 0 && (
           <div className="flex items-center gap-1.5 flex-wrap mb-4" style={{ marginTop: -8 }}>
@@ -2627,7 +2780,7 @@ function ScoutTreino({ data, update, params, nav }) {
   const [etapa, setEtapa] = useState(scout && Object.keys(scout.presencas || {}).length > 0 ? "acoes" : "presenca");
 
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
-  const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  const atletas = atletasRelacionados(data, evento);
   const equipe = data.equipes.find((e) => e.id === evento.equipeId);
   const presentes = atletas.filter((a) => ["presente", "atrasado"].includes(scout.presencas?.[a.id]));
 
@@ -3269,7 +3422,7 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
   const [editandoBolaParada, setEditandoBolaParada] = useState(null); // id do evento sendo editado
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const equipe = data.equipes.find((e) => e.id === evento.equipeId);
-  const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  const atletas = atletasRelacionados(data, evento);
   const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
   const goleiros = atletas.filter((a) => a.posicao === "Goleiro");
   const jogadores = atletas.filter((a) => a.posicao !== "Goleiro");
@@ -3470,8 +3623,8 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
                 return (
                   <Card key={g.id}>
                     <p style={{ color: C.text, fontWeight: 700, fontSize: 13 }} className="mb-2">{g.numero} · {g.nome}</p>
-                    <div className="grid grid-cols-4 gap-2 text-center">
-                      {[["Defesas", s.defesas], ["Gols sofr.", golsSofridos], ["% defesa", `${pct}%`], ["Erros", s.erros]].map(([l, v]) => (
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      {[["Defesas", s.defesas], ["Gols sofr.", golsSofridos], ["% defesa", `${pct}%`], ["Erros", s.erros], ["Gols", s.gols], ["Assist.", s.assistencias]].map(([l, v]) => (
                         <div key={l}><p style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.blue }}>{v}</p><p style={{ fontSize: 9, color: C.textMuted }}>{l}</p></div>
                       ))}
                     </div>
@@ -3587,7 +3740,7 @@ function RelatorioTreino({ data, params, nav }) {
   const scout = data.scouts[params.id];
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const equipe = data.equipes.find((e) => e.id === evento.equipeId);
-  const atletas = data.atletas.filter((a) => (a.categoriaIds || []).includes(evento.categoriaId));
+  const atletas = atletasRelacionados(data, evento);
   const presencaLabel = { presente: "Presente", atrasado: "Atrasado", ausente: "Ausente", liberado: "Liberado" };
   return (
     <div>
@@ -3672,10 +3825,7 @@ function RankingsScreen({ data }) {
         <Ranking title="Artilheiros" items={artilheiros} render={(it) => <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.lime }}>{it.v}</span>} />
         <Ranking title="Líderes de assistências" items={assistentes} render={(it) => <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.blue }}>{it.v}</span>} />
         <Ranking title="Ranking de notas" items={notas} render={(it) => (
-          <div className="text-right">
-            <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.text }}>{it.media.toFixed(1)}</span>
-            <p style={{ fontSize: 9, color: C.textFaint }}>{it.n} jogo{it.n > 1 ? "s" : ""}</p>
-          </div>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.text }}>{it.media.toFixed(1)}</span>
         )} />
       </div>
     </div>
@@ -3736,21 +3886,28 @@ function EstatisticasScreen({ data, update, nav, readOnly }) {
           {!readOnly && <button onClick={() => { setFormPremiacao((f) => ({ ...f, categoriaId: filtroCategoria || f.categoriaId })); setModalPremiacao(true); }} className="flex items-center gap-1 text-xs font-semibold" style={{ color: C.lime }}><Plus size={13} /> Adicionar</button>}
         </div>
         {premiacoes.length === 0 && <EmptyHint text="Nenhuma premiação registrada ainda." />}
-        <div className="flex flex-col gap-2">
-          {premiacoes.map((p) => (
-            <Card key={p.id}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Award size={16} color={C.yellow} />
-                  <div>
-                    <p style={{ color: C.text, fontWeight: 600, fontSize: 13 }}>{p.titulo}</p>
-                    <p style={{ color: C.textMuted, fontSize: 11 }}>{p.categoriaId ? categoriaLabel(data, p.categoriaId) : "Geral"}{p.data && ` · ${formatData(p.data)}`}</p>
+        <div className="flex flex-col gap-2" style={{ maxHeight: 320, overflowY: "auto" }}>
+          {premiacoes.map((p) => {
+            // Cor da medalha conforme a colocação escrita no título — 1º
+            // dourado (ouro), 2º prateado (prata), 3º marrom (bronze).
+            // Aceita "1°", "1º" ou só "1" seguido de espaço/traço/ponto.
+            const m = p.titulo.match(/(?:^|\s)([123])\s*[°ºªo]?\b/i);
+            const cor = m?.[1] === "1" ? C.yellow : m?.[1] === "2" ? "#C7CDD1" : m?.[1] === "3" ? "#B0793D" : C.yellow;
+            return (
+              <Card key={p.id}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Award size={16} color={cor} />
+                    <div>
+                      <p style={{ color: C.text, fontWeight: 600, fontSize: 13 }}>{p.titulo}</p>
+                      <p style={{ color: C.textMuted, fontSize: 11 }}>{p.categoriaId ? categoriaLabel(data, p.categoriaId) : "Geral"}{p.data && ` · ${formatData(p.data)}`}</p>
+                    </div>
                   </div>
+                  {!readOnly && <Trash2 size={14} color={C.red} onClick={() => removerPremiacao(p.id)} />}
                 </div>
-                {!readOnly && <Trash2 size={14} color={C.red} onClick={() => removerPremiacao(p.id)} />}
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       </div>
 
