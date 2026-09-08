@@ -224,6 +224,14 @@ function carregarLeaflet() {
   return leafletCarregando;
 }
 
+function distanciaKmEntre(a, b) {
+  const R = 6371;
+  const toRad = (v) => (v * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(h));
+}
+
 function RotaJogoScreen({ data, params, nav }) {
   const evento = data.eventos.find((e) => e.id === params.id);
   const divRef = useRef(null);
@@ -235,6 +243,8 @@ function RotaJogoScreen({ data, params, nav }) {
   const ultimaRotaRef = useRef(0);
   const [status, setStatus] = useState("carregando"); // carregando | pronto | sem-local | erro
   const [info, setInfo] = useState(null); // { distanciaKm, duracaoMin }
+
+  const [longe, setLonge] = useState(false);
 
   useEffect(() => {
     if (!evento?.local) { setStatus("sem-local"); return; }
@@ -260,11 +270,40 @@ function RotaJogoScreen({ data, params, nav }) {
         const L = await carregarLeaflet();
         if (cancelado || !divRef.current) return;
 
-        const geo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(evento.local)}`).then((r) => r.json());
+        // Pega a localização ANTES de buscar o endereço — é isso que
+        // resolve o problema de endereços vagos (só o nome da escola,
+        // sem cidade) caírem num lugar de nome parecido em outro estado:
+        // em vez de confiar cegamente no 1º resultado do buscador de
+        // endereços, a gente pede vários candidatos e escolhe o que
+        // estiver geograficamente mais perto de onde a pessoa está.
+        const posicaoInicial = await new Promise((resolve) => {
+          if (!("geolocation" in navigator)) return resolve(null);
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+            () => resolve(null),
+            { timeout: 6000, maximumAge: 5 * 60 * 1000 }
+          );
+        });
         if (cancelado) return;
-        if (!geo?.[0]) { setStatus("erro"); return; }
-        const destLat = parseFloat(geo[0].lat), destLon = parseFloat(geo[0].lon);
+
+        const geo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=br&q=${encodeURIComponent(evento.local)}`).then((r) => r.json());
+        if (cancelado) return;
+        if (!geo?.length) { setStatus("erro"); return; }
+
+        let escolhido = geo[0];
+        if (posicaoInicial) {
+          escolhido = geo
+            .map((g) => ({ g, dist: distanciaKmEntre(posicaoInicial, { lat: parseFloat(g.lat), lon: parseFloat(g.lon) }) }))
+            .sort((a, b) => a.dist - b.dist)[0].g;
+        }
+        const destLat = parseFloat(escolhido.lat), destLon = parseFloat(escolhido.lon);
         destRef.current = { lat: destLat, lon: destLon };
+
+        // Mesmo escolhendo o mais próximo, se ainda ficou muito longe da
+        // pessoa, avisa — pode ser um jogo fora mesmo, mas também pode
+        // ser que o endereço cadastrado precise ficar mais completo
+        // (com cidade), então mostra o aviso sem esconder o mapa.
+        if (posicaoInicial && distanciaKmEntre(posicaoInicial, { lat: destLat, lon: destLon }) > 150) setLonge(true);
 
         const mapa = L.map(divRef.current);
         mapaRef.current = mapa;
@@ -274,6 +313,15 @@ function RotaJogoScreen({ data, params, nav }) {
         setStatus("pronto");
 
         if (!("geolocation" in navigator)) return;
+
+        // Já usa a posição que pegamos há pouco como primeiro ponto (sem
+        // pedir permissão de novo), e a partir daqui liga o watchPosition
+        // pra manter atualizando sozinho.
+        if (posicaoInicial) {
+          origemMarkerRef.current = L.marker([posicaoInicial.lat, posicaoInicial.lon]).addTo(mapa).bindPopup("Você está aqui");
+          ultimaRotaRef.current = Date.now();
+          calcularRota(posicaoInicial, L, mapa);
+        }
 
         // watchPosition (em vez de getCurrentPosition uma vez só) — o
         // pontinho "você está aqui" se move sozinho conforme a pessoa se
@@ -324,6 +372,12 @@ function RotaJogoScreen({ data, params, nav }) {
         {status === "erro" && <EmptyHint text="Não conseguimos localizar esse endereço no mapa." />}
         {status !== "sem-local" && status !== "erro" && (
           <>
+            {longe && (
+              <div className="rounded-lg px-3 py-2 mb-3 flex items-start gap-2" style={{ background: "#3A2A0F", border: `1px solid ${C.orange}` }}>
+                <AlertTriangle size={14} color={C.orange} className="shrink-0 mt-0.5" />
+                <p style={{ color: C.orange, fontSize: 11 }}>O local marcado ficou bem longe de onde você está. Se não for jogo fora mesmo, confira se o endereço cadastrado tem cidade/bairro — só o nome do colégio às vezes engana o buscador.</p>
+              </div>
+            )}
             {info && (
               <div className="flex gap-2 mb-3">
                 <div className="flex-1 rounded-lg p-3 text-center" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
@@ -814,7 +868,7 @@ function MeuPerfilScreen({ data, atletaId, onSair }) {
   const isGoleiro = atleta.posicao === "Goleiro";
   const linhas = [
     ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
-    ...(isGoleiro ? [["Defesas", stats.defesas], ["Gols", stats.gols], ["Assistências", stats.assistencias]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
+    ...(isGoleiro ? [["Defesas", stats.defesas], ["Gols sofridos", stats.golsSofridos], ["Gols", stats.gols], ["Assistências", stats.assistencias]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
     ["Precisão de passes", stats.precisaoPasses != null ? `${stats.precisaoPasses}%` : "—"],
     ["Precisão de finalizações", stats.precisaoFinalizacoes != null ? `${stats.precisaoFinalizacoes}%` : "—"],
@@ -1383,8 +1437,7 @@ function UltimoJogoItem({ evento, data, nav }) {
 
 function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pendentes, data, vazio, onEditar }) {
   const scrollRef = useRef(null);
-  const [pausado, setPausado] = useState(false);
-  const resumeTimer = useRef(null);
+  const voltandoRef = useRef(false);
 
   const linhas = [];
   periodosComEventos.forEach((p) => {
@@ -1394,32 +1447,25 @@ function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pend
   pendentes.forEach((it) => linhas.push({ tipo: "pendente", it, key: it.idTemp }));
 
   const total = linhas.length;
-  const itens = total > 3 ? [...linhas, ...linhas] : linhas;
   const altura = Math.min(4, Math.max(1, total)) * 40 + 8;
 
-  // Auto-scroll contínuo, igual ao carrossel de "Últimos jogos" — some pra
-  // cima devagar sozinho e pausa quando o dedo toca a lista.
-  useEffect(() => {
-    if (total <= 4) return;
-    const id = setInterval(() => {
-      const el = scrollRef.current;
-      if (!el || pausado) return;
-      el.scrollTop += 0.5;
-      const metade = el.scrollHeight / 2;
-      if (el.scrollTop >= metade) el.scrollTop -= metade;
-    }, 30);
-    return () => clearInterval(id);
-  }, [pausado, total]);
-
-  useEffect(() => () => { if (resumeTimer.current) clearTimeout(resumeTimer.current); }, []);
-
-  const pausar = () => {
-    setPausado(true);
-    if (resumeTimer.current) clearTimeout(resumeTimer.current);
-  };
-  const retomarEmBreve = () => {
-    if (resumeTimer.current) clearTimeout(resumeTimer.current);
-    resumeTimer.current = setTimeout(() => setPausado(false), 2500);
+  // Sem duplicar a lista e sem rolar sozinho o tempo todo (era isso que
+  // dava a sensação de "informação repetida" — a lista era mostrada
+  // duas vezes seguidas, rolando automático). Agora é rolagem manual
+  // normal; só ao chegar bem no fim (o evento mais antigo) é que volta
+  // sozinho pro topo (o mais recente) depois de um instante, criando um
+  // ciclo sem duplicar nada na tela.
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el || voltandoRef.current) return;
+    const pertoDoFim = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+    if (pertoDoFim && el.scrollHeight > el.clientHeight) {
+      voltandoRef.current = true;
+      setTimeout(() => {
+        if (scrollRef.current) scrollRef.current.scrollTo({ top: 0, behavior: "smooth" });
+        voltandoRef.current = false;
+      }, 900);
+    }
   };
 
   if (vazio) return <EmptyHint text="Nenhum evento registrado ainda." />;
@@ -1427,14 +1473,11 @@ function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pend
   return (
     <div
       ref={scrollRef}
+      onScroll={handleScroll}
       className="overflow-y-auto relative flex flex-col gap-1.5"
       style={{ maxHeight: altura, scrollbarWidth: "none" }}
-      onTouchStart={pausar}
-      onTouchEnd={retomarEmBreve}
-      onMouseDown={pausar}
-      onMouseUp={retomarEmBreve}
     >
-      {itens.map((linha, i) => {
+      {linhas.map((linha, i) => {
         if (linha.tipo === "separador") {
           return (
             <div key={linha.key + "-" + i} className="flex items-center gap-2 my-1">
@@ -1460,7 +1503,7 @@ function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pend
         return (
           <button
             key={linha.key + "-" + i}
-            onClick={() => { pausar(); onEditar(ev); }}
+            onClick={() => onEditar(ev)}
             className="flex items-center justify-between px-3 py-2 rounded-lg text-xs shrink-0 text-left"
             style={{ background: C.surface }}
           >
@@ -1826,7 +1869,7 @@ function Atletas({ data, update, nav }) {
    PERFIL DO ATLETA
    ============================================================ */
 function agregarEstatisticasAtleta(data, atletaId) {
-  const stats = { jogos: new Set(), treinos: new Set(), gols: 0, assistencias: 0, erros: 0, positivos: 0, faltasCometidas: 0, faltasSofridas: 0, defesas: 0, notas: [], minutagemTotal: 0, jogosComMinutagem: 0, passesCertos: 0, passesErrados: 0, finalizacoesTotais: 0, finalizacoesGol: 0 };
+  const stats = { jogos: new Set(), treinos: new Set(), gols: 0, assistencias: 0, erros: 0, positivos: 0, faltasCometidas: 0, faltasSofridas: 0, defesas: 0, golsSofridos: 0, notas: [], minutagemTotal: 0, jogosComMinutagem: 0, passesCertos: 0, passesErrados: 0, finalizacoesTotais: 0, finalizacoesGol: 0 };
   Object.entries(data.scouts).forEach(([eventoId, scout]) => {
     const evento = data.eventos.find((e) => e.id === eventoId);
     if (!evento) return;
@@ -1845,6 +1888,11 @@ function agregarEstatisticasAtleta(data, atletaId) {
         if (ev.acao === "passe" && ev.variante === "Errado") stats.passesErrados++;
         if (ev.acao === "finalizacao_jogador") { stats.finalizacoesTotais++; if (ev.variante === "Gol") stats.finalizacoesGol++; }
       });
+      // Gols sofridos por esse goleiro especificamente (não o placar
+      // inteiro do jogo) — mesma lógica de minuto a minuto usada no
+      // relatório da partida.
+      const golsGKNoJogo = golsSofridosPorGoleiro(scout, data.atletas);
+      if (golsGKNoJogo[atletaId]) stats.golsSofridos += golsGKNoJogo[atletaId];
       if (minutagemAtletaObj && minutagemAtletaObj.segundosTotais > 0) {
         stats.minutagemTotal += minutagemAtletaObj.segundosTotais;
         stats.jogosComMinutagem++;
@@ -1880,7 +1928,7 @@ function AtletaPerfil({ data, update, params, nav, readOnly }) {
   };
   const linhas = [
     ["Jogos", stats.jogos], ["Minutagem média", formatMMSS(stats.minutagemMedia)],
-    ...(isGoleiro ? [["Defesas", stats.defesas], ["Gols", stats.gols], ["Assistências", stats.assistencias]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
+    ...(isGoleiro ? [["Defesas", stats.defesas], ["Gols sofridos", stats.golsSofridos], ["Gols", stats.gols], ["Assistências", stats.assistencias]] : [["Gols", stats.gols], ["Assistências", stats.assistencias]]),
     ["Erros", stats.erros], ["Positivos", stats.positivos],
     ["Precisão de passes", stats.precisaoPasses != null ? `${stats.precisaoPasses}%` : "—"],
     ["Precisão de finalizações", stats.precisaoFinalizacoes != null ? `${stats.precisaoFinalizacoes}%` : "—"],
