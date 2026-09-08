@@ -124,11 +124,20 @@ function resizeImageToDataURL(file, maxDim = 240) {
   });
 }
 
+// "Está escuro lá fora" — janela horária usada só pra escolher QUAL EMOJI
+// mostrar (🌙 ☁️ ⛈️), independente do texto da saudação. Vai das 18h até
+// as 04h59 (a partir das 05h já considera "dia" pra fins de emoji, mesmo
+// que o texto da saudação nessa hora ainda seja "Bom dia").
+function ehNoiteParaEmoji(h) {
+  return h >= 18 || h < 5;
+}
+
 function getSaudacao(nome, emojiClima) {
   const h = new Date().getHours();
+  const noite = ehNoiteParaEmoji(h);
   // Emoji padrão por horário (o mesmo de sempre) — só é trocado se a
   // gente conseguir descobrir o clima de verdade (localização liberada).
-  const emojiPadrao = h < 12 ? "☀️" : h < 18 ? "🌤" : "🌙";
+  const emojiPadrao = noite ? "🌙" : h < 12 ? "☀️" : "🌤";
   const emoji = emojiClima || emojiPadrao;
   if (h < 12) return `Bom dia, ${nome} ${emoji}`;
   if (h < 18) return `Boa tarde, ${nome} ${emoji}`;
@@ -138,16 +147,26 @@ function getSaudacao(nome, emojiClima) {
 // Traduz o código de clima da Open-Meteo (padrão internacional WMO) num
 // emoji. Retorna null pra qualquer situação que a gente não soube
 // traduzir — nesse caso getSaudacao() cai no emoji padrão por horário.
-function emojiPorCodigoClima(codigo, tempC, ehDia) {
+//
+// À noite (18h–04h59) só existem 3 emojis possíveis, sempre a partir do
+// clima real: 🌙 limpo, ☁️ nublado/chuva/neblina/neve, ⛈️ tempestade.
+// De dia mantém o conjunto de sempre (☀️ 🌤 ⛅ 🌧️ ❄️ 🌫️ ⛈️).
+function emojiPorCodigoClima(codigo, tempC, ehNoite) {
   if (codigo == null) return null;
+
+  if (ehNoite) {
+    if (codigo >= 95) return "⛈️"; // tempestade
+    if (codigo === 0 || codigo === 1) return "🌙"; // céu limpo / poucas nuvens
+    return "☁️"; // nublado, chuva, neblina, neve — qualquer coisa que não seja céu limpo
+  }
+
   if (codigo >= 95) return "⛈️";
   if ((codigo >= 51 && codigo <= 67) || (codigo >= 80 && codigo <= 82)) return "🌧️";
   if ((codigo >= 71 && codigo <= 77) || codigo === 85 || codigo === 86) return "❄️";
   if (tempC != null && tempC <= 12) return "❄️";
   if (codigo === 45 || codigo === 48) return "🌫️";
   if (codigo === 3) return "⛅";
-  if (codigo === 0) return ehDia ? "☀️" : "🌙";
-  if (codigo === 1 || codigo === 2) return ehDia ? "🌤" : "🌙";
+  if (codigo === 0 || codigo === 1 || codigo === 2) return "☀️";
   return null;
 }
 
@@ -165,9 +184,13 @@ function useEmojiClima() {
 
     // Evita pedir localização/buscar de novo toda vez que a pessoa abre
     // o app — reaproveita por 30 minutos dentro da mesma sessão.
+    // Importante: o cache guarda também se foi calculado de dia ou de
+    // noite, pra não ficar com um emoji de noite "preso" na tela depois
+    // que já amanheceu (e vice-versa) só porque ainda está dentro da
+    // janela de 30 minutos.
     try {
       const emCache = JSON.parse(sessionStorage.getItem("vps_clima_cache") || "null");
-      if (emCache && Date.now() - emCache.ts < 30 * 60 * 1000) {
+      if (emCache && Date.now() - emCache.ts < 30 * 60 * 1000 && emCache.noite === ehNoiteParaEmoji(new Date().getHours())) {
         setEmoji(emCache.emoji);
         return;
       }
@@ -182,10 +205,11 @@ function useEmojiClima() {
           if (!resp.ok) return;
           const j = await resp.json();
           const cur = j.current || {};
-          const calculado = emojiPorCodigoClima(cur.weather_code, cur.temperature_2m, cur.is_day === 1);
+          const noiteAgora = ehNoiteParaEmoji(new Date().getHours());
+          const calculado = emojiPorCodigoClima(cur.weather_code, cur.temperature_2m, noiteAgora);
           if (!cancelado && calculado) {
             setEmoji(calculado);
-            try { sessionStorage.setItem("vps_clima_cache", JSON.stringify({ emoji: calculado, ts: Date.now() })); } catch { /* ignora */ }
+            try { sessionStorage.setItem("vps_clima_cache", JSON.stringify({ emoji: calculado, noite: noiteAgora, ts: Date.now() })); } catch { /* ignora */ }
           }
         } catch { /* sem internet, API fora do ar etc. — fica no emoji padrão */ }
       },
@@ -335,12 +359,13 @@ function RotaJogoScreen({ data, params, nav }) {
             } else {
               origemMarkerRef.current.setLatLng([origem.lat, origem.lon]);
             }
-            // A rota em si (a linha e o tempo estimado) só recalcula a
-            // cada 30s — o servidor gratuito de rotas não é feito pra
-            // aguentar recalcular a toda hora, e não faz falta pra dar
-            // noção de quanto falta chegar.
+            // A rota em si (a linha e o tempo estimado) recalcula a cada
+            // 15s — o pontinho "você está aqui" já se move a cada
+            // atualização do GPS (instantâneo); só o traçado da rota e o
+            // tempo estimado ficam com esse intervalo curto pra não
+            // sobrecarregar o servidor gratuito de rotas.
             const agora = Date.now();
-            if (agora - ultimaRotaRef.current > 30000) {
+            if (agora - ultimaRotaRef.current > 15000) {
               ultimaRotaRef.current = agora;
               calcularRota(origem, L, mapa);
             }
@@ -1438,6 +1463,8 @@ function UltimoJogoItem({ evento, data, nav }) {
 function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pendentes, data, vazio, onEditar }) {
   const scrollRef = useRef(null);
   const voltandoRef = useRef(false);
+  const [pausado, setPausado] = useState(false);
+  const resumeTimer = useRef(null);
 
   const linhas = [];
   periodosComEventos.forEach((p) => {
@@ -1449,23 +1476,39 @@ function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pend
   const total = linhas.length;
   const altura = Math.min(4, Math.max(1, total)) * 40 + 8;
 
-  // Sem duplicar a lista e sem rolar sozinho o tempo todo (era isso que
-  // dava a sensação de "informação repetida" — a lista era mostrada
-  // duas vezes seguidas, rolando automático). Agora é rolagem manual
-  // normal; só ao chegar bem no fim (o evento mais antigo) é que volta
-  // sozinho pro topo (o mais recente) depois de um instante, criando um
-  // ciclo sem duplicar nada na tela.
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el || voltandoRef.current) return;
-    const pertoDoFim = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
-    if (pertoDoFim && el.scrollHeight > el.clientHeight) {
-      voltandoRef.current = true;
-      setTimeout(() => {
-        if (scrollRef.current) scrollRef.current.scrollTo({ top: 0, behavior: "smooth" });
-        voltandoRef.current = false;
-      }, 900);
-    }
+  // Rolagem automática: desce sozinha aos poucos (sem duplicar nada na
+  // lista) e, ao chegar bem no fim (o evento mais antigo), volta
+  // suavemente pro topo (o mais recente) depois de um instante, criando
+  // um ciclo contínuo. Pausa se a pessoa tocar/rolar/clicar manualmente
+  // (pra editar um evento, por exemplo) e retoma sozinha pouco depois.
+  useEffect(() => {
+    if (total <= 1) return;
+    const id = setInterval(() => {
+      const el = scrollRef.current;
+      if (!el || pausado || voltandoRef.current) return;
+      const pertoDoFim = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+      if (pertoDoFim && el.scrollHeight > el.clientHeight) {
+        voltandoRef.current = true;
+        setTimeout(() => {
+          if (scrollRef.current) scrollRef.current.scrollTo({ top: 0, behavior: "smooth" });
+          setTimeout(() => { voltandoRef.current = false; }, 600);
+        }, 900);
+      } else {
+        el.scrollTop += 0.4;
+      }
+    }, 30);
+    return () => clearInterval(id);
+  }, [pausado, total]);
+
+  useEffect(() => () => { if (resumeTimer.current) clearTimeout(resumeTimer.current); }, []);
+
+  const pausar = () => {
+    setPausado(true);
+    if (resumeTimer.current) clearTimeout(resumeTimer.current);
+  };
+  const retomarEmBreve = () => {
+    if (resumeTimer.current) clearTimeout(resumeTimer.current);
+    resumeTimer.current = setTimeout(() => setPausado(false), 2500);
   };
 
   if (vazio) return <EmptyHint text="Nenhum evento registrado ainda." />;
@@ -1473,7 +1516,11 @@ function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pend
   return (
     <div
       ref={scrollRef}
-      onScroll={handleScroll}
+      onTouchStart={pausar}
+      onTouchEnd={retomarEmBreve}
+      onMouseDown={pausar}
+      onMouseUp={retomarEmBreve}
+      onWheel={pausar}
       className="overflow-y-auto relative flex flex-col gap-1.5"
       style={{ maxHeight: altura, scrollbarWidth: "none" }}
     >
