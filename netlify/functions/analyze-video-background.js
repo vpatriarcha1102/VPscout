@@ -27,19 +27,30 @@ const EVENTOS_SCHEMA = {
     type: SchemaType.OBJECT,
     properties: {
       timestampSeg: { type: SchemaType.NUMBER, description: "Segundos desde o início do vídeo" },
-      tipo: { type: SchemaType.STRING, enum: ["passe", "finalizacao"] },
+      tipo: { type: SchemaType.STRING, enum: ["passe", "finalizacao", "bola_parada", "drible", "falta"] },
       lado: {
         type: SchemaType.STRING,
         enum: ["pro", "contra"],
         nullable: true,
-        description: "Para passe E finalizacao: 'pro' se foi a equipe do elenco cadastrado (cor do uniforme 'a favor') quem executou; 'contra' se foi o time adversário (cor do uniforme 'contra'). SEMPRE preencher, para os dois tipos — passes do adversário também devem ser reportados, contam para as estatísticas da equipe dele.",
+        description: "Para passe, finalizacao e falta: 'pro' = a equipe do elenco cadastrado (cor 'a favor') executou/cometeu; 'contra' = foi o adversário. Passes/finalizações do adversário também devem ser reportados. Não se aplica a bola_parada nem drible (sempre da equipe 'pro').",
       },
-      atletaNumero: { type: SchemaType.NUMBER, nullable: true, description: "Número da camisa; use null se não identificado, ou se lado=contra (não sabemos os números do adversário)" },
+      atletaNumero: { type: SchemaType.NUMBER, nullable: true, description: "Número da camisa; use null se não identificado, se lado=contra, ou se não se aplica" },
       atletaDestinoNumero: { type: SchemaType.NUMBER, nullable: true, description: "Só para passe com lado=pro: número de quem recebeu" },
       resultado: {
         type: SchemaType.STRING,
         nullable: true,
-        description: "Para passe: certo|errado. Para finalizacao (OBRIGATÓRIO, sempre preencher): gol|defendida|trave|nova_jogada|fora",
+        description: "Para passe: certo|errado. Para finalizacao (OBRIGATÓRIO): gol|defendida|trave|nova_jogada|fora. Para bola_parada (OBRIGATÓRIO): chance_perigosa|gol|erro|neutro. Não se aplica a drible/falta.",
+      },
+      categoriaBolaParada: {
+        type: SchemaType.STRING,
+        enum: ["escanteio", "lateral", "falta_cobrada", "penalti"],
+        nullable: true,
+        description: "Só para tipo=bola_parada: qual tipo de reinício, sempre a FAVOR da equipe cadastrada (escanteio ou lateral ofensivo, falta cobrada por nós, ou pênalti a nosso favor).",
+      },
+      pistaSonora: {
+        type: SchemaType.BOOLEAN,
+        nullable: true,
+        description: "Só para tipo=falta: true se você OUVIU claramente o apito do juiz marcando falta, e/ou viu uma reclamação inequívoca de jogador(es)/comissão técnica reagindo à marcação. Esse é o sinal mais confiável pra confirmar que realmente houve falta (contato físico sozinho, sem esses sinais, é muito impreciso pra julgar por vídeo). Sem esse sinal, deixe false e reduza bastante a confiança.",
       },
       comemoracaoClara: {
         type: SchemaType.BOOLEAN,
@@ -79,7 +90,9 @@ Regras obrigatórias:
 - NUNCA invente jogador, passe ou finalização. Se não tiver certeza do
   número da camisa, use atletaNumero: null e reduza a confiança.
 - Priorize, nesta ordem: finalizações (incluindo as que resultam em gol, de
-  QUALQUER um dos dois times), passes (de QUALQUER um dos dois times).
+  QUALQUER um dos dois times), faltas (com apito/reclamação claros), bolas
+  paradas e gols de bola parada, passes (de QUALQUER um dos dois times),
+  dribles.
 
 Sobre os DOIS times — isso vale tanto para passe quanto para finalizacao:
 - Sempre preencha "lado" ("pro" ou "contra") usando a cor dominante do
@@ -131,6 +144,47 @@ erra:
 - confianca reflete sua certeza real (0 a 1) — use valores baixos (abaixo
   de 0.6) sempre que houver ambiguidade real, para que esses casos sejam
   revisados manualmente por um humano depois.
+
+Sobre bola parada (tipo="bola_parada") — só reporte a favor da equipe
+cadastrada (escanteio/lateral ofensivo, falta cobrada por nós, ou pênalti a
+nosso favor); não tentamos rastrear bolas paradas do adversário:
+- categoriaBolaParada: escanteio, lateral, falta_cobrada ou penalti —
+  identifique pelo tipo de reinício (bola na bandeirinha = escanteio, jogador
+  repondo do lado da quadra = lateral, cobrança direta com barreira =
+  falta_cobrada, cobrança da marca do pênalti = penalti).
+- resultado (obrigatório): chance_perigosa (gerou finalização perigosa),
+  gol, erro (perdemos a posse sem perigo) ou neutro (jogada sem consequência
+  clara).
+
+Sobre drible (tipo="drible") — só reporte da equipe cadastrada:
+- Um jogador supera claramente um marcador direto com a bola dominada
+  (mudança de direção, corpo, ou velocidade que deixa o defensor pra trás),
+  mantendo a posse. NÃO conte simples corridas com a bola sem ninguém
+  pressionando, nem disputas de bola truncadas onde não fica claro quem
+  levou vantagem — nesses casos de dúvida real, não reporte o evento.
+- atletaNumero: obrigatório tentar identificar; se não conseguir, não vale
+  a pena reportar o drible (sem jogador não há o que registrar).
+
+Sobre falta (tipo="falta") — esta é a categoria mais delicada de julgar só
+por vídeo, seja MUITO conservador:
+- O sinal mais confiável, de longe, é OUVIR o apito do juiz marcando falta,
+  e/ou VER uma reclamação clara e inequívoca (jogador parando o lance e
+  reclamando visivelmente, comissão técnica se manifestando). Marque
+  pistaSonora: true quando identificar qualquer um desses dois sinais.
+- Contato físico sozinho, sem apito nem reclamação visível, é informação
+  fraca demais pra confirmar falta por vídeo — nesse caso, ou não reporte o
+  evento, ou reporte com confianca bem baixa (abaixo de 0.4).
+- lado: "pro" = a equipe cadastrada cometeu a falta; "contra" = o
+  adversário cometeu (nós sofremos).
+- atletaNumero: só preencha se lado="pro" e você conseguir identificar
+  claramente quem cometeu a falta; senão deixe null.
+
+Consistência: se você assistisse a este mesmo vídeo de novo do zero, sua
+resposta deveria ser praticamente idêntica a esta. Não varie a leitura da
+cena por acaso — baseie cada evento estritamente no que é visualmente
+verificável, e mantenha os mesmos critérios de decisão (principalmente os
+critérios de "resultado" da finalização e de pistaSonora/comemoracaoClara)
+do início ao fim da análise.
 `.trim();
 }
 
@@ -184,6 +238,9 @@ export async function handler(event) {
         `longos está prevista para a Etapa 11.`
       );
     }
+    if (tamanhoBytes < 20 * 1024) {
+      throw new Error("Trecho de vídeo curto demais pra analisar (menos de 20KB) — normalmente indica uma gravação que durou menos de 1 segundo.");
+    }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY não configurada nas variáveis de ambiente da Netlify.");
@@ -209,7 +266,12 @@ export async function handler(event) {
     }
 
     let arquivo = uploadResult.file;
+    const INICIO_ESPERA = Date.now();
+    const LIMITE_ESPERA_MS = 3 * 60 * 1000; // 3 minutos — evita ficar "processando" pra sempre
     while (arquivo.state === FileState.PROCESSING) {
+      if (Date.now() - INICIO_ESPERA > LIMITE_ESPERA_MS) {
+        throw new Error("O processamento do vídeo pela IA demorou demais e foi cancelado. Tente novamente — se persistir, o trecho pode estar corrompido ou vazio demais.");
+      }
       await new Promise((r) => setTimeout(r, 5000));
       arquivo = await fileManager.getFile(arquivo.name);
     }
@@ -219,6 +281,10 @@ export async function handler(event) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
+      // Voltando para o "flash": o "gemini-3.6-pro" que eu tinha colocado
+      // aqui parou de gerar os eventos direito (a análise "concluía" mas
+      // vinha vazia). Erro meu ter trocado sem confirmar que o modelo
+      // respondia igual — revertido pro que já estava validado.
       model: "gemini-3.6-flash",
       generationConfig: {
         responseMimeType: "application/json",
@@ -236,7 +302,22 @@ export async function handler(event) {
       { text: montarPrompt(jogadoresCadastrados, coresUniforme) },
     ]);
 
-    const eventosIA = JSON.parse(resultado.response.text());
+    const textoResposta = resultado.response.text();
+    let eventosIA;
+    try {
+      eventosIA = JSON.parse(textoResposta);
+    } catch {
+      // A IA respondeu, mas não veio um JSON válido (ex: recusou por
+      // segurança, cortou a resposta pela metade, etc). Isso ANTES ficava
+      // marcado como "concluído" com uma lista vazia, dando a entender que
+      // o vídeo foi analisado e simplesmente não achou nada — quando na
+      // verdade a análise nem rodou direito. Agora isso vira erro de
+      // verdade, com o motivo, pra você saber que precisa tentar de novo.
+      throw new Error("A IA não retornou um resultado válido para este trecho. Resposta bruta: " + textoResposta.slice(0, 300));
+    }
+    if (!Array.isArray(eventosIA)) {
+      throw new Error("A IA retornou um formato inesperado (não é uma lista de eventos).");
+    }
 
     await salvarJSON(statusKey, {
       status: "concluido",
