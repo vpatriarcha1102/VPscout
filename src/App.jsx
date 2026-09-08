@@ -224,67 +224,82 @@ function carregarLeaflet() {
   return leafletCarregando;
 }
 
-function MapaRota({ destino }) {
+function RotaJogoScreen({ data, params, nav }) {
+  const evento = data.eventos.find((e) => e.id === params.id);
   const divRef = useRef(null);
   const mapaRef = useRef(null);
-  const [status, setStatus] = useState("carregando"); // carregando | pronto | erro
+  const origemMarkerRef = useRef(null);
+  const polyRef = useRef(null);
+  const destRef = useRef(null);
+  const watchIdRef = useRef(null);
+  const ultimaRotaRef = useRef(0);
+  const [status, setStatus] = useState("carregando"); // carregando | pronto | sem-local | erro
+  const [info, setInfo] = useState(null); // { distanciaKm, duracaoMin }
 
   useEffect(() => {
+    if (!evento?.local) { setStatus("sem-local"); return; }
     let cancelado = false;
+
+    async function calcularRota(origem, L, mapa) {
+      const dest = destRef.current;
+      if (!dest) return;
+      try {
+        const rota = await fetch(`https://router.project-osrm.org/route/v1/driving/${origem.lon},${origem.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson`).then((r) => r.json());
+        const rInfo = rota?.routes?.[0];
+        if (!rInfo || cancelado) return;
+        const linha = rInfo.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+        if (polyRef.current) polyRef.current.remove();
+        polyRef.current = L.polyline(linha, { color: "#2DE0F0", weight: 4 }).addTo(mapa);
+        mapa.fitBounds(polyRef.current.getBounds(), { padding: [28, 28] });
+        setInfo({ distanciaKm: (rInfo.distance / 1000).toFixed(1), duracaoMin: Math.round(rInfo.duration / 60) });
+      } catch { /* mantém a última rota conhecida na tela, tenta de novo no próximo ciclo */ }
+    }
 
     (async () => {
       try {
         const L = await carregarLeaflet();
         if (cancelado || !divRef.current) return;
 
-        // 1) Endereço do jogo → coordenadas (Nominatim, gratuito)
-        const geo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(destino)}`).then((r) => r.json());
+        const geo = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(evento.local)}`).then((r) => r.json());
         if (cancelado) return;
         if (!geo?.[0]) { setStatus("erro"); return; }
         const destLat = parseFloat(geo[0].lat), destLon = parseFloat(geo[0].lon);
+        destRef.current = { lat: destLat, lon: destLon };
 
-        // 2) Localização atual (se a pessoa permitir)
-        const origem = await new Promise((resolve) => {
-          if (!("geolocation" in navigator)) return resolve(null);
-          navigator.geolocation.getCurrentPosition(
-            (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-            () => resolve(null),
-            { timeout: 6000, maximumAge: 5 * 60 * 1000 }
-          );
-        });
-        if (cancelado || !divRef.current) return;
-
-        // Monta o mapa
-        if (mapaRef.current) { mapaRef.current.remove(); mapaRef.current = null; }
-        const mapa = L.map(divRef.current, { attributionControl: true });
+        const mapa = L.map(divRef.current);
         mapaRef.current = mapa;
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          attribution: "© OpenStreetMap",
-          maxZoom: 19,
-        }).addTo(mapa);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap", maxZoom: 19 }).addTo(mapa);
         L.marker([destLat, destLon]).addTo(mapa).bindPopup("Local do jogo");
+        mapa.setView([destLat, destLon], 14);
+        setStatus("pronto");
 
-        // 3) Rota (OSRM) — só se a gente tiver a localização de origem
-        if (origem) {
-          L.marker([origem.lat, origem.lon]).addTo(mapa).bindPopup("Você está aqui");
-          try {
-            const rota = await fetch(`https://router.project-osrm.org/route/v1/driving/${origem.lon},${origem.lat};${destLon},${destLat}?overview=full&geometries=geojson`).then((r) => r.json());
-            const coords = rota?.routes?.[0]?.geometry?.coordinates;
-            if (coords && !cancelado) {
-              const linha = coords.map(([lon, lat]) => [lat, lon]);
-              const poly = L.polyline(linha, { color: "#2DE0F0", weight: 4 }).addTo(mapa);
-              mapa.fitBounds(poly.getBounds(), { padding: [24, 24] });
+        if (!("geolocation" in navigator)) return;
+
+        // watchPosition (em vez de getCurrentPosition uma vez só) — o
+        // pontinho "você está aqui" se move sozinho conforme a pessoa se
+        // desloca de verdade, sem precisar sair e voltar na tela.
+        watchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (cancelado) return;
+            const origem = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+            if (!origemMarkerRef.current) {
+              origemMarkerRef.current = L.marker([origem.lat, origem.lon]).addTo(mapa).bindPopup("Você está aqui");
             } else {
-              mapa.fitBounds([[destLat, destLon], [origem.lat, origem.lon]], { padding: [24, 24] });
+              origemMarkerRef.current.setLatLng([origem.lat, origem.lon]);
             }
-          } catch {
-            mapa.fitBounds([[destLat, destLon], [origem.lat, origem.lon]], { padding: [24, 24] });
-          }
-        } else {
-          mapa.setView([destLat, destLon], 15);
-        }
-
-        if (!cancelado) setStatus("pronto");
+            // A rota em si (a linha e o tempo estimado) só recalcula a
+            // cada 30s — o servidor gratuito de rotas não é feito pra
+            // aguentar recalcular a toda hora, e não faz falta pra dar
+            // noção de quanto falta chegar.
+            const agora = Date.now();
+            if (agora - ultimaRotaRef.current > 30000) {
+              ultimaRotaRef.current = agora;
+              calcularRota(origem, L, mapa);
+            }
+          },
+          () => { /* localização negada — mapa fica só com o destino marcado */ },
+          { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+        );
       } catch {
         if (!cancelado) setStatus("erro");
       }
@@ -292,20 +307,55 @@ function MapaRota({ destino }) {
 
     return () => {
       cancelado = true;
+      if (watchIdRef.current != null && navigator.geolocation) navigator.geolocation.clearWatch(watchIdRef.current);
       if (mapaRef.current) { mapaRef.current.remove(); mapaRef.current = null; }
+      origemMarkerRef.current = null;
+      polyRef.current = null;
     };
-  }, [destino]);
+  }, [evento?.local]);
 
-  if (status === "erro") return null; // não achou o endereço no mapa — some sem quebrar nada
+  if (!evento) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
 
   return (
-    <div className="rounded-xl overflow-hidden mt-3 relative" style={{ border: `1px solid ${C.line}`, height: 200 }}>
-      {status === "carregando" && (
-        <div className="absolute inset-0 flex items-center justify-center" style={{ background: C.surface2, zIndex: 1 }}>
-          <p style={{ color: C.textMuted, fontSize: 12 }}>Carregando mapa…</p>
-        </div>
-      )}
-      <div ref={divRef} className="w-full h-full" />
+    <div>
+      <ScreenHeader title="Rota até o jogo" subtitle={evento.local} onBack={() => nav("evento-detalhe", { id: evento.id })} />
+      <div className="px-5 pb-8">
+        {status === "sem-local" && <EmptyHint text="Esse evento não tem local cadastrado." />}
+        {status === "erro" && <EmptyHint text="Não conseguimos localizar esse endereço no mapa." />}
+        {status !== "sem-local" && status !== "erro" && (
+          <>
+            {info && (
+              <div className="flex gap-2 mb-3">
+                <div className="flex-1 rounded-lg p-3 text-center" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                  <p style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: C.lime }}>{info.duracaoMin} min</p>
+                  <p style={{ fontSize: 10, color: C.textMuted }}>tempo estimado</p>
+                </div>
+                <div className="flex-1 rounded-lg p-3 text-center" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
+                  <p style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: C.text }}>{info.distanciaKm} km</p>
+                  <p style={{ fontSize: 10, color: C.textMuted }}>distância</p>
+                </div>
+              </div>
+            )}
+            <div className="rounded-xl overflow-hidden relative" style={{ border: `1px solid ${C.line}`, height: 380 }}>
+              {status === "carregando" && (
+                <div className="absolute inset-0 flex items-center justify-center" style={{ background: C.surface2, zIndex: 1 }}>
+                  <p style={{ color: C.textMuted, fontSize: 12 }}>Carregando mapa…</p>
+                </div>
+              )}
+              <div ref={divRef} className="w-full h-full" />
+            </div>
+            <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-2 text-center">
+              O ponto "você está aqui" se atualiza sozinho enquanto essa tela ficar aberta.
+            </p>
+          </>
+        )}
+        <Btn
+          className="w-full mt-4"
+          onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(evento.local)}`, "_blank")}
+        >
+          Abrir no app de mapas (com navegação por voz)
+        </Btn>
+      </div>
     </div>
   );
 }
@@ -375,6 +425,67 @@ function formatMMSS(totalSeg) {
   const m = Math.floor(s / 60), ss = s % 60;
   return `${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
+function mmssParaSeg(mmss) {
+  if (!mmss) return null;
+  const partes = String(mmss).split(":").map(Number);
+  if (partes.length !== 2 || partes.some(Number.isNaN)) return null;
+  return partes[0] * 60 + partes[1];
+}
+
+// Reconstrói, a partir do goleiro titular + das substituições
+// registradas, quem estava em quadra no gol em cada trecho do jogo —
+// necessário pra creditar cada gol sofrido ao goleiro certo, e não pra
+// todo mundo que jogou no gol naquela partida.
+function reconstruirEscaladasGoleiro(scout, atletas) {
+  const golPosIds = new Set(atletas.filter((a) => a.posicao === "Goleiro").map((a) => a.id));
+  const subs = (scout.eventosScout || [])
+    .filter((e) => e.acao === "substituicao")
+    .map((e) => ({ ...e, seg: e.segJogo ?? mmssParaSeg(e.minutoJogo) }))
+    .filter((e) => e.seg != null)
+    .sort((a, b) => a.seg - b.seg);
+
+  let goleiroAtualId = Object.entries(scout.minutagem || {})
+    .filter(([id]) => golPosIds.has(id))
+    .map(([id, m]) => ({ id, entrada: m.entradaEmSeg ?? 0 }))
+    .sort((a, b) => a.entrada - b.entrada)[0]?.id || null;
+
+  const escaladas = [];
+  let inicioAtual = 0;
+  subs.forEach((sub) => {
+    if (golPosIds.has(sub.saiId) && sub.saiId === goleiroAtualId) {
+      escaladas.push({ atletaId: goleiroAtualId, inicio: inicioAtual, fim: sub.seg });
+      goleiroAtualId = golPosIds.has(sub.entraId) ? sub.entraId : null;
+      inicioAtual = sub.seg;
+    } else if (golPosIds.has(sub.entraId) && !goleiroAtualId) {
+      goleiroAtualId = sub.entraId;
+      inicioAtual = sub.seg;
+    }
+  });
+  if (goleiroAtualId) escaladas.push({ atletaId: goleiroAtualId, inicio: inicioAtual, fim: Infinity });
+  return escaladas;
+}
+
+// Quantos gols cada goleiro específico sofreu, com base em quem estava
+// em quadra no momento exato de cada gol adversário (não o placar
+// inteiro da partida repetido pra todos os goleiros que jogaram).
+function golsSofridosPorGoleiro(scout, atletas) {
+  const escaladas = reconstruirEscaladasGoleiro(scout, atletas);
+  const contagem = {};
+  (scout.eventosScout || []).filter((e) => e.acao === "gol_adv").forEach((ev) => {
+    const seg = ev.segJogo ?? mmssParaSeg(ev.minutoJogo);
+    let alvo = seg != null ? escaladas.find((e) => seg >= e.inicio && seg < e.fim)?.atletaId : null;
+    if (!alvo) {
+      // Sem tempo registrado (gol de antes dessa atualização, ou vindo
+      // da IA sem minutagem): melhor esforço — se só um goleiro jogou a
+      // partida inteira, credita pra ele; senão, pro último que esteve
+      // em quadra.
+      alvo = escaladas.length === 1 ? escaladas[0].atletaId : escaladas[escaladas.length - 1]?.atletaId || null;
+    }
+    if (alvo) contagem[alvo] = (contagem[alvo] || 0) + 1;
+  });
+  return contagem;
+}
+
 function minutagemAtleta(scout, atletaId) {
   const m = scout.minutagem?.[atletaId];
   if (!m) return 0;
@@ -1042,6 +1153,7 @@ export default function App() {
         {view === "atleta-perfil" && <AtletaPerfil data={data} update={update} params={params} nav={nav} readOnly={readOnly} />}
         {view === "calendario" && <CalendarioView data={data} update={update} nav={nav} readOnly={readOnly} />}
         {view === "evento-detalhe" && <EventoDetalhe data={data} update={update} params={params} nav={nav} readOnly={readOnly} />}
+        {view === "rota-jogo" && <RotaJogoScreen data={data} params={params} nav={nav} />}
         {!readOnly && view === "scout-jogo" && <ScoutJogo data={data} update={update} params={params} nav={nav} />}
         {!readOnly && view === "revisao-ia" && <RevisaoIA data={data} update={update} params={params} nav={nav} />}
         {!readOnly && view === "scout-treino" && <ScoutTreino data={data} update={update} params={params} nav={nav} />}
@@ -1354,6 +1466,7 @@ function UltimosEventosCarousel({ C, periodosComEventos, ultimosPorPeriodo, pend
           >
             <span style={{ color: C.text }}>{at ? `${at.numero} · ${at.nome} — ` : ""}{acaoLabel(data, ev)}</span>
             <span className="flex items-center gap-1.5">
+              {ev.minutoJogo && (ev.acao === "gol" || ev.acao === "gol_adv") && <span style={{ color: C.textFaint }}>{ev.minutoJogo}</span>}
               {ev.periodoNumero && <span style={{ color: C.textFaint }}>P{ev.periodoNumero}</span>}
               <SquarePen size={11} color={C.textFaint} />
             </span>
@@ -1984,15 +2097,9 @@ function EventoDetalhe({ data, update, params, nav, readOnly }) {
         })()}
 
         {evento.local && (
-          <>
-            <Btn
-              className="w-full mt-3"
-              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(evento.local)}`, "_blank")}
-            >
-              <MapPin size={16} /> Ver rota até o local
-            </Btn>
-            <MapaRota destino={evento.local} />
-          </>
+          <Btn className="w-full mt-3" onClick={() => nav("rota-jogo", { id: evento.id })}>
+            <MapPin size={16} /> Ver rota até o local
+          </Btn>
         )}
         <div className="flex flex-col gap-2 mt-4">
           {evento.status === "finalizado" ? (
@@ -2056,8 +2163,8 @@ function EventoDetalhe({ data, update, params, nav, readOnly }) {
    ============================================================ */
 function acaoLabel(data, ev) {
   switch (ev.acao) {
-    case "gol": return `Gol${ev.variante ? ` (${ev.variante})` : ""}`;
-    case "gol_adv": return `Gol sofrido${ev.variante ? ` (${ev.variante})` : ""}`;
+    case "gol": return ev.variante && ev.variante !== "Gol" ? `Gol (${ev.variante})` : "Gol";
+    case "gol_adv": return ev.variante && ev.variante !== "Gol" ? `Gol sofrido (${ev.variante})` : "Gol sofrido";
     case "assistencia": return "Assistência";
     case "erro": return ev.variante && ev.variante !== "Simples" ? `Erro — ${ev.variante}` : "Erro";
     case "falta": return `Falta ${ev.variante}`;
@@ -2299,10 +2406,21 @@ function ScoutJogo({ data, update, params, nav }) {
     update((d) => {
       const s = d.scouts[evento.id];
       const atletaId = extra.atletaId !== undefined ? extra.atletaId : atletaAtivo;
-      s.eventosScout.push({ id: uid(), acao: acaoKey, atletaId, variante, periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo, ...extra });
+      // Gols (a favor e sofridos) guardam também o segundo exato do jogo
+      // em que aconteceram — é isso que permite depois saber qual
+      // goleiro estava em quadra na hora de cada gol sofrido, em vez de
+      // simplesmente somar todos os gols do jogo pra todo mundo que jogou
+      // no gol.
+      const marcaTempo = (acaoKey === "gol" || acaoKey === "gol_adv") ? { segJogo: tempoTotalAtual(s.cronometro), minutoJogo: formatMMSS(tempoTotalAtual(s.cronometro)) } : {};
+      s.eventosScout.push({ id: uid(), acao: acaoKey, atletaId, variante, periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo, ...marcaTempo, ...extra });
       if (acaoKey === "gol") { s.placarCasa++; s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "pro", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); }
       if (acaoKey === "gol_adv") { s.placarVisitante++; s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); }
-      if (acaoKey === "erro" && variante === "Gerou gol adversário") { s.placarVisitante++; s.eventosScout.push({ id: uid(), acao: "gol_adv", atletaId: null, variante: "Erro provocado", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo }); }
+      if (acaoKey === "erro" && variante === "Gerou gol adversário") {
+        s.placarVisitante++;
+        const totalAgora = tempoTotalAtual(s.cronometro);
+        s.eventosScout.push({ id: uid(), acao: "gol_adv", atletaId: null, variante: "Erro provocado", periodoNumero: s.periodoAtual, segJogo: totalAgora, minutoJogo: formatMMSS(totalAgora), ts: Date.now(), ...carimbo });
+        s.eventosScout.push({ id: uid(), acao: "finalizacao_time", atletaId: null, variante: "Gol", lado: "contra", periodoNumero: s.periodoAtual, ts: Date.now(), ...carimbo });
+      }
       return d;
     });
     setVariantePendente(null);
@@ -2415,7 +2533,7 @@ function ScoutJogo({ data, update, params, nav }) {
       }
       s.minutagem[entraId] = s.minutagem[entraId] || { segundosTotais: 0, entradaEmSeg: null };
       s.minutagem[entraId].entradaEmSeg = totalAgora;
-      s.eventosScout.push({ id: uid(), acao: "substituicao", atletaId: null, saiId, entraId, periodoNumero: s.periodoAtual, minutoJogo: formatMMSS(totalAgora), ts: Date.now() });
+      s.eventosScout.push({ id: uid(), acao: "substituicao", atletaId: null, saiId, entraId, periodoNumero: s.periodoAtual, segJogo: totalAgora, minutoJogo: formatMMSS(totalAgora), ts: Date.now() });
       return d;
     });
     if (atletaAtivo === saiId) setAtletaAtivo(null);
@@ -2443,7 +2561,14 @@ function ScoutJogo({ data, update, params, nav }) {
   };
 
   const finalizacoesCount = (key) => scout.eventosScout.filter((e) => e.acao === "finalizacao_time" && e.variante === key && (e.lado || "pro") === ladoFinalizacao && e.periodoNumero === scout.periodoAtual).length;
-  const ultimos = [...scout.eventosScout].slice(-6).reverse();
+  const ultimos = [...scout.eventosScout]
+    // A linha de "Finalização a favor/contra — Gol" é só o registro pra
+    // estatística da equipe — ela sempre vem colada com o evento "gol"/
+    // "gol_adv" (que já mostra o autor ou "Gol sofrido"), então escondemos
+    // ela aqui pra não duplicar a mesma informação em duas linhas.
+    .filter((e) => !(e.acao === "finalizacao_time" && e.variante === "Gol"))
+    .slice(-6)
+    .reverse();
   // Agrupa por tempo (1º/2º) pra mostrar com separador visual — mais fácil
   // de visualizar o que aconteceu em cada período sem misturar tudo numa
   // lista só corrida.
@@ -3565,7 +3690,7 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
     };
   };
   const jogadoresComDados = jogadores.map((a) => ({ a, s: statsAtleta(a.id) })).filter(({ s }) => Object.values(s).some((v) => v > 0));
-  const golsSofridos = scout.placarVisitante;
+  const golsSofridosPorGK = golsSofridosPorGoleiro(scout, atletas);
 
   const substituicoes = scout.eventosScout.filter((e) => e.acao === "substituicao");
   const bolasParadas = scout.eventosScout.filter((e) => e.acao === "bola_parada");
@@ -3734,12 +3859,13 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
             <div className="flex flex-col gap-2">
               {goleiros.map((g) => {
                 const s = statsAtleta(g.id);
-                const pct = s.defesas + golsSofridos > 0 ? Math.round((s.defesas / (s.defesas + golsSofridos)) * 100) : 0;
+                const golsSofridosDele = golsSofridosPorGK[g.id] || 0;
+                const pct = s.defesas + golsSofridosDele > 0 ? Math.round((s.defesas / (s.defesas + golsSofridosDele)) * 100) : 0;
                 return (
                   <Card key={g.id}>
                     <p style={{ color: C.text, fontWeight: 700, fontSize: 13 }} className="mb-2">{g.numero} · {g.nome}</p>
                     <div className="grid grid-cols-3 gap-2 text-center">
-                      {[["Defesas", s.defesas], ["Gols sofr.", golsSofridos], ["% defesa", `${pct}%`], ["Erros", s.erros], ["Gols", s.gols], ["Assist.", s.assistencias]].map(([l, v]) => (
+                      {[["Defesas", s.defesas], ["Gols sofr.", golsSofridosDele], ["% defesa", `${pct}%`], ["Erros", s.erros], ["Gols", s.gols], ["Assist.", s.assistencias]].map(([l, v]) => (
                         <div key={l}><p style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.blue }}>{v}</p><p style={{ fontSize: 9, color: C.textMuted }}>{l}</p></div>
                       ))}
                     </div>
