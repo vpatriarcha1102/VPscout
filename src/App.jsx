@@ -148,26 +148,30 @@ function getSaudacao(nome, emojiClima) {
 // emoji. Retorna null pra qualquer situação que a gente não soube
 // traduzir — nesse caso getSaudacao() cai no emoji padrão por horário.
 //
-// À noite (18h–04h59) só existem 3 emojis possíveis, sempre a partir do
-// clima real: 🌙 limpo, ☁️ nublado/chuva/neblina/neve, ⛈️ tempestade.
-// De dia mantém o conjunto de sempre (☀️ 🌤 ⛅ 🌧️ ❄️ 🌫️ ⛈️).
+// Conjunto de emojis usado, sempre a partir do clima real: ☀️ céu limpo,
+// ⛅️ nublado sem chuva (de dia), ☁️ nublado à noite, 🌧️ chuva (fraca,
+// moderada ou forte — inclui tempestade, sem distinguir a força), 🌙 céu
+// limpo à noite. Além disso, ❄️ aparece sempre que a temperatura estiver
+// abaixo de 20°, independente do código do clima (tem prioridade sobre
+// ☀️/⛅️, mas não sobre 🌧️).
+function ehCodigoDeChuva(codigo) {
+  // Cobre garoa, chuva, pancadas de chuva e tempestade — tudo isso vira
+  // 🌧️, sem se importar com a intensidade.
+  return codigo >= 95 || (codigo >= 51 && codigo <= 67) || (codigo >= 80 && codigo <= 82);
+}
 function emojiPorCodigoClima(codigo, tempC, ehNoite) {
   if (codigo == null) return null;
 
   if (ehNoite) {
-    if (codigo >= 95) return "⛈️"; // tempestade
+    if (ehCodigoDeChuva(codigo)) return "🌧️"; // chuva ou tempestade
     if (codigo === 0 || codigo === 1) return "🌙"; // céu limpo / poucas nuvens
-    return "☁️"; // nublado, chuva, neblina, neve — qualquer coisa que não seja céu limpo
+    return "☁️"; // nublado, neblina, neve — qualquer coisa que não seja céu limpo nem chuva
   }
 
-  if (codigo >= 95) return "⛈️";
-  if ((codigo >= 51 && codigo <= 67) || (codigo >= 80 && codigo <= 82)) return "🌧️";
-  if ((codigo >= 71 && codigo <= 77) || codigo === 85 || codigo === 86) return "❄️";
-  if (tempC != null && tempC <= 12) return "❄️";
-  if (codigo === 45 || codigo === 48) return "🌫️";
-  if (codigo === 3) return "⛅";
-  if (codigo === 0 || codigo === 1 || codigo === 2) return "☀️";
-  return null;
+  if (ehCodigoDeChuva(codigo)) return "🌧️"; // chuva ou tempestade
+  if (tempC != null && tempC < 20) return "❄️"; // temperatura abaixo de 20°
+  if (codigo === 0 || codigo === 1) return "☀️"; // céu limpo
+  return "⛅️"; // nublado, neblina, neve — qualquer coisa que não seja céu limpo nem chuva
 }
 
 // Pede a localização (se a pessoa liberar) e busca o clima atual na
@@ -2656,23 +2660,32 @@ function ScoutJogo({ data, update, params, nav }) {
   };
 
   const finalizacoesCount = (key) => scout.eventosScout.filter((e) => e.acao === "finalizacao_time" && e.variante === key && (e.lado || "pro") === ladoFinalizacao && e.periodoNumero === scout.periodoAtual).length;
+  // Traz TODOS os eventos do jogo (não só os últimos) — a lista rola em
+  // modo scroll dentro da seção, então não precisa cortar nada aqui.
+  // scout.eventosScout já vem em ordem cronológica (cada evento é
+  // empurrado com push() no momento em que acontece), então não
+  // reordenamos: do primeiro evento do 1º tempo até o último evento do
+  // último período.
   const ultimos = [...scout.eventosScout]
     // A linha de "Finalização a favor/contra — Gol" é só o registro pra
     // estatística da equipe — ela sempre vem colada com o evento "gol"/
     // "gol_adv" (que já mostra o autor ou "Gol sofrido"), então escondemos
     // ela aqui pra não duplicar a mesma informação em duas linhas.
-    .filter((e) => !(e.acao === "finalizacao_time" && e.variante === "Gol"))
-    .slice(-6)
-    .reverse();
-  // Agrupa por tempo (1º/2º) pra mostrar com separador visual — mais fácil
-  // de visualizar o que aconteceu em cada período sem misturar tudo numa
-  // lista só corrida.
+    .filter((e) => !(e.acao === "finalizacao_time" && e.variante === "Gol"));
+  // Agrupa por tempo (1º/2º/3º...) pra mostrar com separador visual — mais
+  // fácil de visualizar o que aconteceu em cada período sem misturar tudo
+  // numa lista só corrida. Dentro de cada período os eventos ficam na
+  // ordem em que aconteceram (mais antigo primeiro).
   const ultimosPorPeriodo = ultimos.reduce((acc, ev) => {
     const p = ev.periodoNumero || 1;
     (acc[p] = acc[p] || []).push(ev);
     return acc;
   }, {});
-  const periodosComEventos = Object.keys(ultimosPorPeriodo).map(Number).sort((a, b) => b - a);
+  // Ordem ascendente: 1º tempo primeiro, indo até o último período — o
+  // carrossel (UltimosEventosCarousel) desce sozinho por essa lista e,
+  // ao chegar no fim (último evento do último tempo), volta pro topo
+  // (primeiro evento do 1º tempo), reiniciando o ciclo de scroll.
+  const periodosComEventos = Object.keys(ultimosPorPeriodo).map(Number).sort((a, b) => a - b);
   const periodoAtualObj = periodos.find((p) => p.numero === scout.periodoAtual) || periodos[0];
   const placarPorPeriodo = periodos.map((p) => ({
     ...p,
