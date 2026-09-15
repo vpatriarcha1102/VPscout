@@ -58,15 +58,29 @@ export function useVideoRecorder() {
     }
     setStatus("pedindo_permissao");
     try {
+      // Pedimos Full HD (1920x1080) com o celular na horizontal — o
+      // "ideal" faz o navegador usar a melhor resolução disponível na
+      // câmera até esse teto, sem travar em aparelhos mais fracos (que
+      // caem pra um valor menor automaticamente).
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: "environment",
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          frameRate: { ideal: 30 },
+        },
         audio: true,
       });
       streamRef.current = stream;
       setStream(stream);
       chunksRef.current = [];
       const mimeType = escolherMimeType();
-      const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const recorder = new window.MediaRecorder(stream, {
+        ...(mimeType ? { mimeType } : {}),
+        // Bitrate mais alto pra manter nitidez nos lances rápidos
+        // (sem isso o navegador comprime demais e a bola vira um borrão).
+        videoBitsPerSecond: 8_000_000,
+      });
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
