@@ -18,10 +18,11 @@ const COLLECTION = "vpscouts_kv";
 /* ---------- Fallback: localStorage (um dispositivo só) ---------- */
 const storageLocal = {
   async get(key) {
-    try {
-      const raw = window.localStorage.getItem(PREFIX_LOCAL + key);
-      return raw === null ? null : { key, value: raw };
-    } catch (e) { return null; }
+    // Propositalmente NÃO engolimos erro aqui (ver storageFirestore.get):
+    // se algo der errado de verdade, quem chama precisa saber, pra nunca
+    // tratar "falhou ao ler" como se fosse "ainda não existe nada".
+    const raw = window.localStorage.getItem(PREFIX_LOCAL + key);
+    return raw === null ? null : { key, value: raw };
   },
   async set(key, value) {
     try { window.localStorage.setItem(PREFIX_LOCAL + key, value); return { key, value }; }
@@ -48,10 +49,15 @@ const storageLocal = {
 /* ---------- Firestore: dados compartilhados entre todos os dispositivos ---------- */
 const storageFirestore = {
   async get(key) {
-    try {
-      const snap = await getDoc(doc(db, COLLECTION, key));
-      return snap.exists() ? { key, value: snap.data().value } : null;
-    } catch (e) { return null; }
+    // IMPORTANTE: não fazemos catch aqui. Se a leitura falhar de verdade
+    // (rede, permissão, projeto errado etc.), isso precisa chegar como
+    // erro até o App — porque um erro de leitura tratado como "documento
+    // vazio" faz o app achar que não existe nada salvo e, pouco depois,
+    // GRAVAR um estado vazio por cima dos dados reais que só não
+    // conseguiram ser lidos naquele momento. Só "documento realmente não
+    // existe" (snap.exists() === false) deve virar null.
+    const snap = await getDoc(doc(db, COLLECTION, key));
+    return snap.exists() ? { key, value: snap.data().value } : null;
   },
   async set(key, value) {
     try {
