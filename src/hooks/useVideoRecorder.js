@@ -49,19 +49,16 @@ export function useVideoRecorder() {
     }
   };
 
-  const iniciar = useCallback(async () => {
+  const abrirPreview = useCallback(async () => {
     setErro(null);
     if (!suportado) {
       setErro("Gravação nativa não é suportada neste navegador/dispositivo.");
       setStatus("erro");
       return;
     }
+    if (streamRef.current) return; // já tem câmera aberta (preview ou gravação)
     setStatus("pedindo_permissao");
     try {
-      // Pedimos Full HD (1920x1080) com o celular na horizontal — o
-      // "ideal" faz o navegador usar a melhor resolução disponível na
-      // câmera até esse teto, sem travar em aparelhos mais fracos (que
-      // caem pra um valor menor automaticamente).
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: "environment",
@@ -73,6 +70,61 @@ export function useVideoRecorder() {
       });
       streamRef.current = stream;
       setStream(stream);
+      setStatus("pre_visualizando");
+    } catch (e) {
+      const negado = e && (e.name === "NotAllowedError" || e.name === "PermissionDeniedError");
+      setErro(negado ? "Permissão de câmera/microfone negada." : "Não foi possível acessar a câmera.");
+      setStatus("erro");
+    }
+  }, [suportado]);
+
+  // Fecha a câmera aberta só pra pré-visualização, sem ter gravado nada.
+  const fecharPreview = useCallback(() => {
+    if (streamRef.current && recorderRef.current == null) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setStream(null);
+      setStatus("parado");
+    }
+  }, []);
+
+  const iniciar = useCallback(async () => {
+    setErro(null);
+    if (!suportado) {
+      setErro("Gravação nativa não é suportada neste navegador/dispositivo.");
+      setStatus("erro");
+      return;
+    }
+    // Se a câmera já está aberta (por causa da pré-visualização), reaproveita
+    // o mesmo stream em vez de pedir permissão de novo — evita um segundo
+    // pedido de permissão e mantém o ângulo já ajustado sem reiniciar a câmera.
+    let stream = streamRef.current;
+    if (!stream) {
+      setStatus("pedindo_permissao");
+      try {
+        // Pedimos Full HD (1920x1080) com o celular na horizontal — o
+        // "ideal" faz o navegador usar a melhor resolução disponível na
+        // câmera até esse teto, sem travar em aparelhos mais fracos (que
+        // caem pra um valor menor automaticamente).
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: true,
+        });
+        streamRef.current = stream;
+        setStream(stream);
+      } catch (e) {
+        const negado = e && (e.name === "NotAllowedError" || e.name === "PermissionDeniedError");
+        setErro(negado ? "Permissão de câmera/microfone negada." : "Não foi possível acessar a câmera.");
+        setStatus("erro");
+        return;
+      }
+    }
+    try {
       chunksRef.current = [];
       const mimeType = escolherMimeType();
       const recorder = new window.MediaRecorder(stream, {
@@ -125,6 +177,7 @@ export function useVideoRecorder() {
 
   const reiniciar = useCallback(() => {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
+    recorderRef.current = null;
     setVideoBlob(null);
     setVideoUrl(null);
     setSegundos(0);
@@ -157,6 +210,8 @@ export function useVideoRecorder() {
     videoBlob,
     videoUrl,
     stream,
+    abrirPreview,
+    fecharPreview,
     iniciar,
     parar,
     reiniciar,
