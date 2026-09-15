@@ -31,6 +31,10 @@ export function useVideoRecorder() {
   const [erro, setErro] = useState(null);
   const [videoBlob, setVideoBlob] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
+  // Stream ao vivo da câmera enquanto ela está aberta — usado só pra
+  // preview (o <video> na tela), não pra gravação em si (isso o
+  // MediaRecorder já cuida sozinho, guardado em streamRef).
+  const [stream, setStream] = useState(null);
 
   const streamRef = useRef(null);
   const recorderRef = useRef(null);
@@ -59,6 +63,7 @@ export function useVideoRecorder() {
         audio: true,
       });
       streamRef.current = stream;
+      setStream(stream);
       chunksRef.current = [];
       const mimeType = escolherMimeType();
       const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -73,12 +78,15 @@ export function useVideoRecorder() {
         pararTimer();
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
+        setStream(null);
       };
       recorder.onerror = () => {
         setErro("A gravação foi interrompida por um erro do navegador.");
         setStatus("erro");
         pararTimer();
         stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        setStream(null);
       };
       recorderRef.current = recorder;
       recorder.start(5000);
@@ -134,6 +142,7 @@ export function useVideoRecorder() {
     erro,
     videoBlob,
     videoUrl,
+    stream,
     iniciar,
     parar,
     reiniciar,
