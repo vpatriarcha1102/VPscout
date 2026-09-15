@@ -646,9 +646,15 @@ function Field({ label, children }) {
 }
 
 const inputStyle = { background: C.surface2, color: C.text, border: `1px solid ${C.line}`, fontFamily: FONT_BODY };
-function Input(props) { return <input {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none focus:ring-1 ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
+// autoComplete="off" + autoCorrect/autoCapitalize/spellCheck desligados por
+// padrão: sem isso, o teclado do celular (QuickType/autocorreção) às vezes
+// troca sozinho um nome digitado por outro valor sugerido/salvo antes no
+// mesmo campo (ex: escrever "Rosário" e o campo virar "Santa Marcelina" do
+// nada). Continua dando pra sobrescrever passando a prop explicitamente,
+// já que o spread de "props" vem depois desses valores padrão.
+function Input(props) { return <input autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none focus:ring-1 ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
 function Select(props) { return <select {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
-function TextArea(props) { return <textarea {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
+function TextArea(props) { return <textarea autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} {...props} className={`w-full px-3 py-2.5 rounded-lg text-sm outline-none ${props.className || ""}`} style={{ ...inputStyle, ...(props.style || {}) }} />; }
 
 function Modal({ title, onClose, children, wide }) {
   return (
