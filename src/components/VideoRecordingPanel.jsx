@@ -41,10 +41,12 @@ function PreviewCamera({ stream, C }) {
   );
 }
 
-// Visualização em tela cheia da câmera enquanto grava — pensada pro
-// celular deitado (horizontal): o vídeo ocupa a tela toda em "contain"
-// pra mostrar o enquadramento completo, sem cortar as bordas da quadra.
-function TransmissaoFullscreen({ stream, cronometro, onFinalizar, onFechar, C }) {
+// Visualização em tela cheia da câmera — usada tanto pra conferir o
+// ângulo ANTES de gravar (gravando=false, botão "Iniciar gravação")
+// quanto durante a gravação (gravando=true, mostra o cronômetro e
+// "Finalizar gravação"). Pensada pro celular deitado (horizontal): o
+// vídeo ocupa a tela toda em "contain", sem cortar as bordas da quadra.
+function CameraFullscreen({ stream, gravando, cronometro, onIniciar, onFinalizar, onFechar, C }) {
   const videoElRef = useRef(null);
   useEffect(() => {
     const el = videoElRef.current;
@@ -67,9 +69,15 @@ function TransmissaoFullscreen({ stream, cronometro, onFinalizar, onFechar, C })
         style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.65), transparent)" }}
       >
         <div className="flex items-center gap-2">
-          <span className="animate-pulse" style={{ width: 8, height: 8, borderRadius: 999, background: C.red, display: "inline-block" }} />
-          <span style={{ color: C.red, fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>GRAVANDO</span>
-          <span style={{ fontFamily: "'Bebas Neue', 'Oswald', sans-serif", fontSize: 20, color: "#fff" }}>{formatMMSS(cronometro)}</span>
+          {gravando ? (
+            <>
+              <span className="animate-pulse" style={{ width: 8, height: 8, borderRadius: 999, background: C.red, display: "inline-block" }} />
+              <span style={{ color: C.red, fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>GRAVANDO</span>
+              <span style={{ fontFamily: "'Bebas Neue', 'Oswald', sans-serif", fontSize: 20, color: "#fff" }}>{formatMMSS(cronometro)}</span>
+            </>
+          ) : (
+            <span style={{ color: "#fff", fontSize: 12, fontWeight: 600 }}>Ajuste o ângulo da câmera</span>
+          )}
         </div>
         <button onClick={onFechar} style={{ color: "#fff" }} aria-label="Fechar visualização">
           <X size={24} />
@@ -79,13 +87,23 @@ function TransmissaoFullscreen({ stream, cronometro, onFinalizar, onFechar, C })
         className="absolute bottom-0 left-0 right-0 flex justify-center px-4 py-4"
         style={{ background: "linear-gradient(to top, rgba(0,0,0,0.65), transparent)" }}
       >
-        <button
-          onClick={onFinalizar}
-          className="flex items-center justify-center gap-2 py-2.5 px-6 rounded-lg font-semibold text-sm"
-          style={{ background: C.redDim, color: C.red, border: `1px solid ${C.red}` }}
-        >
-          <Square size={14} fill={C.red} /> Finalizar gravação
-        </button>
+        {gravando ? (
+          <button
+            onClick={onFinalizar}
+            className="flex items-center justify-center gap-2 py-2.5 px-6 rounded-lg font-semibold text-sm"
+            style={{ background: C.redDim, color: C.red, border: `1px solid ${C.red}` }}
+          >
+            <Square size={14} fill={C.red} /> Finalizar gravação
+          </button>
+        ) : (
+          <button
+            onClick={onIniciar}
+            className="flex items-center justify-center gap-2 py-2.5 px-6 rounded-lg font-semibold text-sm"
+            style={{ background: C.limeDim, color: C.lime, border: `1px solid ${C.lime}` }}
+          >
+            <Circle size={14} fill={C.lime} /> Iniciar gravação
+          </button>
+        )}
       </div>
     </div>
   );
@@ -114,7 +132,7 @@ function AguardandoPermissao({ C }) {
   );
 }
 
-export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado }) {
+export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado, onGravacaoIniciada }) {
   const rec = useVideoRecorder();
   const [mostrarDicas, setMostrarDicas] = useState(false);
   const [transmissaoAberta, setTransmissaoAberta] = useState(false);
@@ -196,11 +214,34 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
     }
   }, [rec.status]);
 
+  // Tentativa de disparo pelo controle remoto Bluetooth do tripé (o botão
+  // de "photo/vídeo" que vem junto). A maioria desses controles funciona
+  // emulando o botão físico de volume do celular — e boa parte dos
+  // navegadores no Android NÃO repassa esse evento pra dentro da página (o
+  // sistema já consome o volume antes de chegar até aqui). Por isso isso é
+  // um "melhor esforço": em alguns aparelhos funciona, em outros não há
+  // nada que o app consiga fazer, é uma limitação do sistema/navegador.
+  useEffect(() => {
+    const podeIniciarPeloControle = rec.status === "parado" || rec.status === "pre_visualizando";
+    if (!podeIniciarPeloControle) return undefined;
+    const aoApertarTecla = (e) => {
+      const teclasDeDisparo = ["AudioVolumeUp", "AudioVolumeDown", "VolumeUp", "VolumeDown"];
+      if (teclasDeDisparo.includes(e.key) || e.keyCode === 24 || e.keyCode === 25) {
+        e.preventDefault();
+        iniciarGravacao();
+      }
+    };
+    window.addEventListener("keydown", aoApertarTecla);
+    return () => window.removeEventListener("keydown", aoApertarTecla);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rec.status]);
+
   const iniciarGravacao = () => {
     cronometroTotalRef.current = 0;
     setSegmentos([]);
     modoRef.current = "gravando";
     rec.iniciar();
+    onGravacaoIniciada?.();
   };
 
   const finalizarGravacao = () => {
@@ -242,8 +283,9 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
   return (
     <div className="rounded-xl p-4 mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
       {transmissaoAberta && rec.stream && (
-        <TransmissaoFullscreen
+        <CameraFullscreen
           stream={rec.stream}
+          gravando={true}
           cronometro={cronometroExibido}
           onFinalizar={() => { setTransmissaoAberta(false); finalizarGravacao(); }}
           onFechar={() => setTransmissaoAberta(false)}
@@ -281,16 +323,26 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
             <Circle size={14} fill={C.lime} /> Iniciar gravação
           </button>
           <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={rec.abrirPreview}
             className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs"
             style={{ background: "transparent", color: C.textMuted, border: `1px solid ${C.line}` }}
           >
-            <FolderOpen size={13} /> Já tenho um vídeo gravado — importar da galeria
+            <Maximize2 size={13} /> Visualizar câmera
           </button>
         </div>
       )}
 
       {rec.status === "pedindo_permissao" && <AguardandoPermissao C={C} />}
+
+      {rec.status === "pre_visualizando" && rec.stream && (
+        <CameraFullscreen
+          stream={rec.stream}
+          gravando={false}
+          onIniciar={iniciarGravacao}
+          onFechar={rec.fecharPreview}
+          C={C}
+        />
+      )}
 
       {(rec.status === "gravando" || (rec.status === "finalizado" && modoRef.current === "rotacionando")) && (
         <div className="flex flex-col items-center gap-3">
