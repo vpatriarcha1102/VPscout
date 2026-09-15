@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Video, Circle, Square, RotateCcw, Info, Upload, FolderOpen, CloudUpload, CheckCircle2, AlertTriangle, Scissors } from "lucide-react";
+import { Video, Circle, Square, RotateCcw, Info, Upload, FolderOpen, CloudUpload, CheckCircle2, AlertTriangle, Scissors, Maximize2, X } from "lucide-react";
 import { useVideoRecorder } from "../hooks/useVideoRecorder";
 import * as uploadService from "../services/videoUploadService";
 
@@ -41,6 +41,56 @@ function PreviewCamera({ stream, C }) {
   );
 }
 
+// Visualização em tela cheia da câmera enquanto grava — pensada pro
+// celular deitado (horizontal): o vídeo ocupa a tela toda em "contain"
+// pra mostrar o enquadramento completo, sem cortar as bordas da quadra.
+function TransmissaoFullscreen({ stream, cronometro, onFinalizar, onFechar, C }) {
+  const videoElRef = useRef(null);
+  useEffect(() => {
+    const el = videoElRef.current;
+    if (!el) return;
+    el.srcObject = stream || null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center" style={{ background: "#000" }}>
+      <video
+        ref={videoElRef}
+        autoPlay
+        muted
+        playsInline
+        style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }}
+      />
+      <div
+        className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3"
+        style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.65), transparent)" }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="animate-pulse" style={{ width: 8, height: 8, borderRadius: 999, background: C.red, display: "inline-block" }} />
+          <span style={{ color: C.red, fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>GRAVANDO</span>
+          <span style={{ fontFamily: "'Bebas Neue', 'Oswald', sans-serif", fontSize: 20, color: "#fff" }}>{formatMMSS(cronometro)}</span>
+        </div>
+        <button onClick={onFechar} style={{ color: "#fff" }} aria-label="Fechar visualização">
+          <X size={24} />
+        </button>
+      </div>
+      <div
+        className="absolute bottom-0 left-0 right-0 flex justify-center px-4 py-4"
+        style={{ background: "linear-gradient(to top, rgba(0,0,0,0.65), transparent)" }}
+      >
+        <button
+          onClick={onFinalizar}
+          className="flex items-center justify-center gap-2 py-2.5 px-6 rounded-lg font-semibold text-sm"
+          style={{ background: C.redDim, color: C.red, border: `1px solid ${C.red}` }}
+        >
+          <Square size={14} fill={C.red} /> Finalizar gravação
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AguardandoPermissao({ C }) {
   const [tempoPreso, setTempoPreso] = useState(0);
   useEffect(() => {
@@ -67,6 +117,7 @@ function AguardandoPermissao({ C }) {
 export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado }) {
   const rec = useVideoRecorder();
   const [mostrarDicas, setMostrarDicas] = useState(false);
+  const [transmissaoAberta, setTransmissaoAberta] = useState(false);
   const [segmentos, setSegmentos] = useState([]); // [{ indice, status, progresso, erro }]
   const fileInputRef = useRef(null);
   const modoRef = useRef("parado"); // "gravando" | "rotacionando" | "finalizando" | "parado"
@@ -136,6 +187,15 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rec.status, rec.videoBlob]);
 
+  // Fecha a visualização em tela cheia quando a gravação é finalizada de
+  // verdade (não durante os cortes automáticos de segmento, que reabrem
+  // a câmera sozinhos em seguida).
+  useEffect(() => {
+    if (rec.status !== "gravando" && modoRef.current !== "rotacionando") {
+      setTransmissaoAberta(false);
+    }
+  }, [rec.status]);
+
   const iniciarGravacao = () => {
     cronometroTotalRef.current = 0;
     setSegmentos([]);
@@ -181,6 +241,15 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
 
   return (
     <div className="rounded-xl p-4 mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
+      {transmissaoAberta && rec.stream && (
+        <TransmissaoFullscreen
+          stream={rec.stream}
+          cronometro={cronometroExibido}
+          onFinalizar={() => { setTransmissaoAberta(false); finalizarGravacao(); }}
+          onFechar={() => setTransmissaoAberta(false)}
+          C={C}
+        />
+      )}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <Video size={16} color={C.textMuted} />
@@ -231,6 +300,13 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
           </div>
           <span style={{ fontFamily: "'Bebas Neue', 'Oswald', sans-serif", fontSize: 34, color: C.text, lineHeight: 1 }}>{formatMMSS(cronometroExibido)}</span>
           <PreviewCamera stream={rec.stream} C={C} />
+          <button
+            onClick={() => setTransmissaoAberta(true)}
+            className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold"
+            style={{ background: C.surface3, color: C.text, border: `1px solid ${C.line}` }}
+          >
+            <Maximize2 size={13} /> Visualizar transmissão
+          </button>
           <button
             onClick={finalizarGravacao}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm"
