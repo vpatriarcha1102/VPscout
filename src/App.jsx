@@ -2834,6 +2834,7 @@ function ScoutJogo({ data, update, params, nav }) {
             return d;
           })}
           onTempoAtualizado={(t) => { videoTempoRef.current = t; }}
+          onGravacaoIniciada={() => { if (!scout.cronometro.rodando) iniciarCronometro(); }}
         />
         {Object.keys(scout.videosPorPeriodo || {}).length > 0 && (
           <div className="flex items-center gap-1.5 flex-wrap mb-4" style={{ marginTop: -8 }}>
