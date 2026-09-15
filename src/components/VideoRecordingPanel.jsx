@@ -43,6 +43,7 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
   const [mostrarDicas, setMostrarDicas] = useState(false);
   const [segmentos, setSegmentos] = useState([]); // [{ indice, status, progresso, erro }]
   const fileInputRef = useRef(null);
+  const videoPreviewRef = useRef(null);
   const modoRef = useRef("parado"); // "gravando" | "rotacionando" | "finalizando" | "parado"
   // Começa do número de trechos que JÁ existem pra este período (persistido
   // no scout) — nunca reinicia em 0 ao regravar, senão um novo trecho
@@ -50,6 +51,17 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
   // entre os dois vídeos diferentes.
   const proximoIndiceRef = useRef(indiceInicial);
   const cronometroTotalRef = useRef(0); // soma dos segmentos já concluídos, pro relógio não voltar a 00:00
+
+  // Conecta o stream ao vivo da câmera no <video> de preview (e desliga
+  // quando a câmera fecha, entre um segmento e outro por exemplo) — é o
+  // mesmo stream que o MediaRecorder está gravando, então o que aparece
+  // na tela é exatamente o que vai pro vídeo, sem abrir uma segunda
+  // câmera em paralelo.
+  useEffect(() => {
+    const el = videoPreviewRef.current;
+    if (!el) return;
+    el.srcObject = rec.stream || null;
+  }, [rec.stream]);
 
   const enviarSegmento = (blob, indice) => {
     setSegmentos((prev) => [...prev, { indice, status: "enviando", progresso: 0, erro: null }]);
@@ -199,6 +211,21 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
             <span style={{ color: C.red, fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>GRAVANDO</span>
           </div>
           <span style={{ fontFamily: "'Bebas Neue', 'Oswald', sans-serif", fontSize: 34, color: C.text, lineHeight: 1 }}>{formatMMSS(cronometroExibido)}</span>
+          {rec.stream && (
+            <div className="w-full">
+              <video
+                ref={videoPreviewRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full rounded-lg block"
+                style={{ maxHeight: 220, background: "#000", objectFit: "cover" }}
+              />
+              <p className="text-center mt-1" style={{ color: C.textFaint, fontSize: 10 }}>
+                Pré-visualização — ajuste o ângulo/posição do celular se precisar
+              </p>
+            </div>
+          )}
           <button
             onClick={finalizarGravacao}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm"
