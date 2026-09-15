@@ -1039,13 +1039,21 @@ export default function App() {
       try {
         const res = await window.storage.get(STORAGE_KEY, false);
         if (res && res.value) setData({ ...emptyState(), ...JSON.parse(res.value) });
-      } catch (e) { setLoadError(true); }
-      finally { setLoaded(true); }
+        // Só libera o salvamento automático quando a leitura teve SUCESSO
+        // (mesmo que não tenha achado nada — aí é uma instalação nova de
+        // verdade). Se a leitura falhar, "loaded" fica false de propósito:
+        // preferimos travar o app com uma tela de erro a arriscar gravar
+        // um estado vazio por cima de dados reais que só não puderam ser
+        // lidos agora (rede instável, configuração, etc.).
+        setLoaded(true);
+      } catch (e) {
+        setLoadError(true);
+      }
     })();
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || loadError) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       const serializado = JSON.stringify(data);
@@ -1053,7 +1061,7 @@ export default function App() {
       try { await window.storage.set(STORAGE_KEY, serializado, false); } catch (e) { /* best-effort */ }
     }, 350);
     return () => clearTimeout(saveTimer.current);
-  }, [data, loaded]);
+  }, [data, loaded, loadError]);
 
   // Sincronização em tempo real entre dispositivos — inteiramente aditivo:
   // só faz algo se `window.storage.subscribe` existir (isto é, se o
@@ -1150,6 +1158,25 @@ export default function App() {
     return <SplashScreen onFim={() => setSplashVisivel(false)} />;
   }
 
+  if (loadError) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: C.bg, minHeight: 500 }}>
+        <AlertTriangle size={28} color={C.red} />
+        <p style={{ color: C.text, fontFamily: FONT_BODY, fontSize: 14, fontWeight: 600 }}>Não foi possível carregar seus dados</p>
+        <p style={{ color: C.textMuted, fontFamily: FONT_BODY, fontSize: 12 }}>
+          Por segurança, o app não vai continuar nem salvar nada até isso ser resolvido — assim nenhum dado salvo corre risco.
+          Verifique sua internet e tente novamente.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{ background: C.lime, color: "#0B0F0E", border: "none", borderRadius: 8, padding: "10px 20px", fontWeight: 600, fontFamily: FONT_BODY, fontSize: 13 }}
+        >
+          Tentar novamente
+        </button>
+      </div>
+    );
+  }
+
   if (!loaded) {
     return <div className="w-full h-full flex items-center justify-center" style={{ background: C.bg, minHeight: 500 }}><span style={{ color: C.textMuted, fontFamily: FONT_BODY }}>Carregando...</span></div>;
   }
@@ -1196,7 +1223,6 @@ export default function App() {
     <div className="w-full mx-auto" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap'); @keyframes pulse-live { 0%,100%{opacity:1} 50%{opacity:0.25} } @keyframes marquee-up { from{transform:translateY(0)} to{transform:translateY(-50%)} }`}</style>
       <div className="pb-24">
-        {loadError && <div className="text-xs px-4 py-2" style={{ background: C.redDim, color: C.red }}>Não foi possível carregar dados salvos — começando do zero.</div>}
         {showTabs && (
           <div className="px-5 pt-5 pb-3 flex items-center gap-3" style={{ borderBottom: `1px solid ${C.line}`, marginBottom: 4 }}>
             <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: C.limeDim, border: `1.5px solid ${C.lime}` }}>
