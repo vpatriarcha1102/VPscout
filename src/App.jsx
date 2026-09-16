@@ -447,6 +447,53 @@ function RotaJogoScreen({ data, params, nav }) {
 
 const STORAGE_KEY = "futsal-data-v1";
 
+// Rede de segurança extra, independente do Firestore/localStorage principal:
+// a cada gravação bem-sucedida, guarda também uma cópia crua no
+// localStorage DESTE aparelho, uma por dia (a última gravação do dia
+// sobrescreve a anterior do MESMO dia, mas o dia anterior fica intocado).
+// Serve pra, se algum dia o dado sincronizado sumir ou vier corrompido por
+// qualquer motivo (rede, configuração, bug), sempre existir uma versão
+// recente e íntegra pra recuperar sem depender de nada externo — o
+// treinador não precisa ter lembrado de baixar um backup manual.
+const SNAPSHOT_PREFIX = "vpscouts_snapshot_local_v1_";
+const SNAPSHOT_DIAS_GUARDADOS = 7;
+
+function chaveSnapshotHoje() {
+  return SNAPSHOT_PREFIX + new Date().toISOString().slice(0, 10); // AAAA-MM-DD
+}
+
+function salvarSnapshotLocalDoDia(serializado) {
+  try {
+    window.localStorage.setItem(chaveSnapshotHoje(), serializado);
+    const limite = Date.now() - SNAPSHOT_DIAS_GUARDADOS * 24 * 60 * 60 * 1000;
+    for (let i = window.localStorage.length - 1; i >= 0; i--) {
+      const k = window.localStorage.key(i);
+      if (!k || !k.startsWith(SNAPSHOT_PREFIX)) continue;
+      const t = new Date(`${k.slice(SNAPSHOT_PREFIX.length)}T00:00:00`).getTime();
+      if (!Number.isNaN(t) && t < limite) window.localStorage.removeItem(k);
+    }
+  } catch (e) { /* best-effort — se o localStorage estiver cheio, segue sem travar o app */ }
+}
+
+// Do mais recente pro mais antigo, pra listar na tela de Backup.
+function listarSnapshotsLocais() {
+  try {
+    const dias = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(SNAPSHOT_PREFIX)) dias.push(k.slice(SNAPSHOT_PREFIX.length));
+    }
+    return dias.sort().reverse();
+  } catch (e) { return []; }
+}
+
+function lerSnapshotLocal(dia) {
+  try {
+    const raw = window.localStorage.getItem(SNAPSHOT_PREFIX + dia);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
 const emptyState = () => ({
   escolas: [],
   equipes: [],
@@ -1060,7 +1107,10 @@ export default function App() {
     saveTimer.current = setTimeout(async () => {
       const serializado = JSON.stringify(data);
       ultimoValorEscritoRef.current = serializado;
-      try { await window.storage.set(STORAGE_KEY, serializado, false); } catch (e) { /* best-effort */ }
+      try {
+        await window.storage.set(STORAGE_KEY, serializado, false);
+        salvarSnapshotLocalDoDia(serializado);
+      } catch (e) { /* best-effort */ }
     }, 350);
     return () => clearTimeout(saveTimer.current);
   }, [data, loaded, loadError]);
@@ -1153,6 +1203,22 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  // Restaura a partir de um snapshot local automático (o de "Vídeos que
+  // gravou mas não subiram" abaixo é sobre vídeo — este aqui é sobre os
+  // dados do app: atletas, jogos, scouts). Não depende de o treinador ter
+  // baixado um backup manualmente antes.
+  const restaurarSnapshotLocal = (dia) => {
+    const snapshot = lerSnapshotLocal(dia);
+    if (!snapshot || typeof snapshot !== "object") {
+      alert("Não foi possível ler essa cópia automática.");
+      return;
+    }
+    if (!window.confirm(`Isso vai SUBSTITUIR todos os dados atuais do app pelos dados salvos automaticamente em ${dia}. Essa ação não pode ser desfeita. Continuar?`)) return;
+    setData({ ...emptyState(), ...snapshot });
+    setModalBackup(false);
+    alert("Dados restaurados a partir da cópia automática.");
+  };
+
   // Recuperação de emergência: procura, no armazenamento local deste
   // aparelho (IndexedDB), qualquer trecho de vídeo que foi gravado mas
   // nunca terminou de subir (por exemplo, por causa de uma falha de rede
@@ -1213,6 +1279,20 @@ export default function App() {
       setRecuperando(false);
     }
   };
+
+  // Roda a recuperação de vídeos pendentes sozinha, uma vez, assim que os
+  // dados terminam de carregar — silenciosa (não mostra nada na tela a
+  // menos que o treinador abra o Backup depois), só pra garantir que um
+  // trecho gravado numa sessão anterior que não terminou de subir (app
+  // fechado, aba recarregada, sem internet no momento) não fique esquecido
+  // esperando o treinador lembrar de ir em Configurações reenviar na mão.
+  const recuperacaoAutoDisparadaRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || loadError || recuperacaoAutoDisparadaRef.current) return;
+    recuperacaoAutoDisparadaRef.current = true;
+    recuperarVideosPendentes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, loadError]);
 
   // Tela de saudação: aparece na abertura do app, mesmo offline, mesmo antes
   // de terminar de carregar os dados — e depois se desfaz com fade para a
@@ -1321,6 +1401,31 @@ export default function App() {
                 <FolderOpen size={13} /> Restaurar a partir de um backup
               </button>
               <p style={{ color: C.textFaint, fontSize: 10 }}>Restaurar substitui todos os dados atuais pelos do arquivo escolhido.</p>
+
+              <div className="mt-1 pt-3" style={{ borderTop: `1px solid ${C.line}` }}>
+                <p style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>Cópias automáticas neste aparelho</p>
+                <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-0.5 mb-2">
+                  Sem precisar baixar nada, o app guarda sozinho uma cópia dos dados por dia, direto neste
+                  aparelho — uma última linha de defesa se algo der errado na sincronização.
+                </p>
+                {listarSnapshotsLocais().length === 0 ? (
+                  <p style={{ color: C.textFaint, fontSize: 10 }}>Nenhuma cópia automática ainda.</p>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {listarSnapshotsLocais().map((dia) => (
+                      <button
+                        key={dia}
+                        onClick={() => restaurarSnapshotLocal(dia)}
+                        className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs"
+                        style={{ background: C.surface, color: C.textMuted, border: `1px solid ${C.line}` }}
+                      >
+                        <span>{new Date(`${dia}T00:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" })}</span>
+                        <span style={{ color: C.lime }}>Restaurar</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div className="mt-1 pt-3" style={{ borderTop: `1px solid ${C.line}` }}>
                 <p style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>Vídeos que gravou mas não subiram</p>
