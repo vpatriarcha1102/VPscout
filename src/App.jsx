@@ -13,6 +13,8 @@ import { getAIAnalysisService } from "./services/aiAnalysisService";
 import { useAnaliseAoVivo } from "./hooks/useAnaliseAoVivo";
 import { obterUrlReproducao } from "./services/videoPlaybackService";
 import { gerarEventosRevisaveis, aplicarEventosConfirmados } from "./lib/iaEventConverter";
+import * as videoStore from "./lib/videoStore";
+import * as uploadService from "./services/videoUploadService";
 
 installStorageShim();
 
@@ -1151,6 +1153,67 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  // Recuperação de emergência: procura, no armazenamento local deste
+  // aparelho (IndexedDB), qualquer trecho de vídeo que foi gravado mas
+  // nunca terminou de subir (por exemplo, por causa de uma falha de rede
+  // ou CORS) — e tenta enviar de novo, encaixando automaticamente de
+  // volta no jogo/período certo pela própria chave do registro
+  // (formato: "{idDoJogo}_p{periodo}_s{indice}").
+  const [recuperando, setRecuperando] = useState(false);
+  const [resultadoRecuperacao, setResultadoRecuperacao] = useState(null);
+
+  const recuperarVideosPendentes = async () => {
+    setRecuperando(true);
+    setResultadoRecuperacao(null);
+    try {
+      const registros = await videoStore.listarTodosRegistros();
+      const pendentes = registros.filter((r) => r.blob && r.status !== "concluido");
+      if (pendentes.length === 0) {
+        setResultadoRecuperacao({ total: 0, recuperados: 0, falharam: 0 });
+        return;
+      }
+      let recuperados = 0;
+      let falharam = 0;
+      for (const registro of pendentes) {
+        const m = /^(.+)_p(\d+)_s(\d+)$/.exec(registro.partidaId);
+        if (!m) { falharam++; continue; }
+        const [, eventoId, periodoStr, indiceStr] = m;
+        const periodoNumero = Number(periodoStr);
+        const indice = Number(indiceStr);
+        try {
+          await new Promise((resolve, reject) => {
+            uploadService.retomarUploadPendente(registro.partidaId, {
+              onConcluido: ({ key }) => {
+                update((d) => {
+                  const s = d.scouts[eventoId];
+                  if (!s) return d;
+                  if (!s.videosPorPeriodo) s.videosPorPeriodo = {};
+                  if (!s.videosPorPeriodo[periodoNumero]) s.videosPorPeriodo[periodoNumero] = { segmentos: [] };
+                  const seg = s.videosPorPeriodo[periodoNumero].segmentos || [];
+                  if (!seg.some((x) => x.indice === indice)) {
+                    seg.push({ indice, key, analiseStatus: "idle" });
+                    s.videosPorPeriodo[periodoNumero].segmentos = seg;
+                  }
+                  return d;
+                });
+                resolve();
+              },
+              onErro: (erro) => reject(new Error(erro)),
+            }).catch(reject);
+          });
+          recuperados++;
+        } catch (e) {
+          falharam++;
+        }
+      }
+      setResultadoRecuperacao({ total: pendentes.length, recuperados, falharam });
+    } catch (e) {
+      setResultadoRecuperacao({ erro: e?.message || "Falha ao procurar vídeos pendentes." });
+    } finally {
+      setRecuperando(false);
+    }
+  };
+
   // Tela de saudação: aparece na abertura do app, mesmo offline, mesmo antes
   // de terminar de carregar os dados — e depois se desfaz com fade para a
   // tela de baixo (login ou, se já tinha sessão salva, direto para o início).
@@ -1258,6 +1321,26 @@ export default function App() {
                 <FolderOpen size={13} /> Restaurar a partir de um backup
               </button>
               <p style={{ color: C.textFaint, fontSize: 10 }}>Restaurar substitui todos os dados atuais pelos do arquivo escolhido.</p>
+
+              <div className="mt-1 pt-3" style={{ borderTop: `1px solid ${C.line}` }}>
+                <p style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>Vídeos que gravou mas não subiram</p>
+                <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-0.5 mb-2">
+                  Se algum trecho gravado NESTE aparelho falhou ao enviar, ele continua guardado aqui até conseguir subir. Toque abaixo pra tentar enviar de novo.
+                </p>
+                <Btn variant="outline" className="w-full" onClick={recuperarVideosPendentes} disabled={recuperando}>
+                  {recuperando ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+                  {recuperando ? "Procurando e reenviando..." : "Verificar e reenviar vídeos pendentes"}
+                </Btn>
+                {resultadoRecuperacao && (
+                  <p className="mt-2" style={{ fontSize: 11, color: resultadoRecuperacao.erro || resultadoRecuperacao.falharam ? C.red : C.lime }}>
+                    {resultadoRecuperacao.erro
+                      ? `Erro: ${resultadoRecuperacao.erro}`
+                      : resultadoRecuperacao.total === 0
+                      ? "Nenhum vídeo pendente encontrado neste aparelho."
+                      : `${resultadoRecuperacao.recuperados} de ${resultadoRecuperacao.total} trecho(s) reenviado(s) com sucesso${resultadoRecuperacao.falharam ? ` — ${resultadoRecuperacao.falharam} ainda falharam (tente de novo)` : ""}.`}
+                  </p>
+                )}
+              </div>
             </div>
           </Modal>
         )}
