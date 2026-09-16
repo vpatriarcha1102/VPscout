@@ -7,7 +7,7 @@ import * as uploadService from "../services/videoUploadService";
 // segmento (sem o treinador perceber — a tela continua mostrando
 // "GRAVANDO" o tempo todo). Cada segmento sobe e é analisado sozinho
 // assim que fica pronto, ao invés de esperar o vídeo inteiro terminar.
-const SEGMENTO_DURACAO_SEG = 150; // 2m30s
+const SEGMENTO_DURACAO_SEG = 180; // 3min
 
 function formatMMSS(totalSeg) {
   const s = Math.max(0, Math.floor(totalSeg || 0));
