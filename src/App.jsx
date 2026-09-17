@@ -5,7 +5,7 @@ import {
   Shield, Trophy, Dumbbell, ArrowLeft, Circle, CheckCircle2, XCircle,
   AlertCircle, FileText, Target, Footprints, Star, Repeat, Award, SlidersHorizontal, BarChart3,
   CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap,
-  Sparkles, Loader2, RotateCcw, HardDriveDownload, FolderOpen
+  Sparkles, Loader2, RotateCcw, HardDriveDownload, FolderOpen, CloudUpload
 } from "lucide-react";
 import { installStorageShim } from "./lib/storage";
 import { VideoRecordingPanel } from "./components/VideoRecordingPanel";
@@ -413,7 +413,7 @@ function RotaJogoScreen({ data, params, nav }) {
               <div className="flex gap-2 mb-3">
                 <div className="flex-1 rounded-lg p-3 text-center" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
                   <p style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: C.lime }}>{info.duracaoMin} min</p>
-                  <p style={{ fontSize: 10, color: C.textMuted }}>tempo estimado</p>
+                  <p style={{ fontSize: 10, color: C.textMuted }}>tempo sem trânsito (aproximado)</p>
                 </div>
                 <div className="flex-1 rounded-lg p-3 text-center" style={{ background: C.surface, border: `1px solid ${C.line}` }}>
                   <p style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: C.text }}>{info.distanciaKm} km</p>
@@ -430,16 +430,38 @@ function RotaJogoScreen({ data, params, nav }) {
               <div ref={divRef} className="w-full h-full" />
             </div>
             <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-2 text-center">
-              O ponto "você está aqui" se atualiza sozinho enquanto essa tela ficar aberta.
+              O ponto "você está aqui" se atualiza sozinho enquanto essa tela ficar aberta. O tempo acima é uma estimativa sem considerar trânsito — pra hora certa, use o Waze ou Google Maps abaixo.
             </p>
           </>
         )}
-        <Btn
-          className="w-full mt-4"
-          onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(evento.local)}`, "_blank")}
-        >
-          Abrir no app de mapas (com navegação por voz)
-        </Btn>
+        <div className="flex gap-2 mt-4">
+          <Btn
+            className="flex-1"
+            onClick={() => {
+              const d = destRef.current;
+              // Usa as coordenadas que a gente já resolveu (o candidato mais
+              // próximo de onde você está, ver acima) em vez de deixar o
+              // Google geocodificar o endereço de novo — se o endereço
+              // cadastrado for vago (só o nome do local, sem cidade), o
+              // Google pode achar um lugar diferente do que o app achou,
+              // e essa era uma causa real da diferença de tempo/rota.
+              const destino = d ? `${d.lat},${d.lon}` : evento.local;
+              window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destino)}`, "_blank");
+            }}
+          >
+            Abrir no Google Maps
+          </Btn>
+          <Btn
+            className="flex-1"
+            onClick={() => {
+              const d = destRef.current;
+              const url = d ? `https://waze.com/ul?ll=${d.lat},${d.lon}&navigate=yes` : `https://waze.com/ul?q=${encodeURIComponent(evento.local)}&navigate=yes`;
+              window.open(url, "_blank");
+            }}
+          >
+            Abrir no Waze
+          </Btn>
+        </div>
       </div>
     </div>
   );
@@ -1228,6 +1250,35 @@ export default function App() {
   const [recuperando, setRecuperando] = useState(false);
   const [resultadoRecuperacao, setResultadoRecuperacao] = useState(null);
 
+  // Indicador global de upload: como o upload de um trecho continua em
+  // segundo plano mesmo depois de trocar de período/tela (o vídeo NUNCA
+  // para de subir só porque você começou a gravar outra coisa), sem isso
+  // não havia como saber, olhando pra qualquer outra tela, se ainda tinha
+  // trecho subindo ou se algum tinha falhado. Este contador consulta
+  // diretamente o IndexedDB (a fonte de verdade de todo upload, esteja
+  // ele sendo mostrado nesta tela ou não) e atualiza sozinho.
+  const [statusUploadsGlobal, setStatusUploadsGlobal] = useState({ enviando: 0, erro: 0 });
+  useEffect(() => {
+    if (sessao?.tipo === "aluno") return undefined;
+    let cancelado = false;
+    const checar = async () => {
+      try {
+        const registros = await videoStore.listarTodosRegistros();
+        if (cancelado) return;
+        let enviando = 0, erro = 0;
+        for (const r of registros) {
+          if (r.status === "concluido") continue;
+          if (r.status === "erro") erro++;
+          else enviando++; // preparando | enviando | aguardando_conexao
+        }
+        setStatusUploadsGlobal({ enviando, erro });
+      } catch (e) { /* best-effort */ }
+    };
+    checar();
+    const id = setInterval(checar, 4000);
+    return () => { cancelado = true; clearInterval(id); };
+  }, [sessao?.tipo]);
+
   const recuperarVideosPendentes = async () => {
     setRecuperando(true);
     setResultadoRecuperacao(null);
@@ -1365,6 +1416,30 @@ export default function App() {
   return (
     <div className="w-full mx-auto" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap'); @keyframes pulse-live { 0%,100%{opacity:1} 50%{opacity:0.25} } @keyframes marquee-up { from{transform:translateY(0)} to{transform:translateY(-50%)} }`}</style>
+      {!readOnly && (statusUploadsGlobal.enviando > 0 || statusUploadsGlobal.erro > 0) && (
+        <button
+          onClick={() => setModalBackup(true)}
+          className="fixed flex items-center gap-1.5 px-2.5 py-1.5 rounded-full shadow-lg"
+          style={{
+            top: 10, right: 10, zIndex: 70,
+            background: statusUploadsGlobal.erro > 0 ? C.redDim : C.surface2,
+            border: `1px solid ${statusUploadsGlobal.erro > 0 ? C.red : C.line}`,
+            fontSize: 11,
+          }}
+          aria-label="Status de envio dos vídeos"
+        >
+          {statusUploadsGlobal.erro > 0 ? (
+            <AlertTriangle size={13} color={C.red} />
+          ) : (
+            <CloudUpload size={13} color={C.lime} className="animate-pulse" />
+          )}
+          <span style={{ color: statusUploadsGlobal.erro > 0 ? C.red : C.textMuted }}>
+            {statusUploadsGlobal.erro > 0
+              ? `${statusUploadsGlobal.erro} trecho(s) com erro`
+              : `${statusUploadsGlobal.enviando} vídeo(s) enviando…`}
+          </span>
+        </button>
+      )}
       <div className="pb-24">
         {showTabs && (
           <div className="px-5 pt-5 pb-3 flex items-center gap-3" style={{ borderBottom: `1px solid ${C.line}`, marginBottom: 4 }}>
@@ -2604,7 +2679,7 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
               const chave = `p${periodo.numero}-s${seg.indice}`;
               return (
                 <button key={chave} onClick={() => abrirSegmento(periodo.numero, seg)} className="py-1.5 px-2 rounded-lg text-xs" style={{ background: ativa === chave ? C.limeDim : C.surface, border: `1px solid ${ativa === chave ? C.lime : C.line}`, color: ativa === chave ? C.lime : C.textMuted }}>
-                  {periodo.label} · trecho {seg.indice + 1}
+                  {periodo.label} · {seg.inicioSeg != null ? `${formatMMSS(seg.inicioSeg)}–${formatMMSS(seg.inicioSeg + (seg.duracaoSeg || 0))}` : `trecho ${seg.indice + 1}`}
                 </button>
               );
             }))}
@@ -2671,6 +2746,12 @@ function ScoutJogo({ data, update, params, nav }) {
     const t = videoTempoRef.current;
     return t ? { timestampSeg: t.timestampSeg, segmentoIndice: t.segmentoIndice } : {};
   };
+  // Referência pro painel de gravação — usada pra garantir que uma
+  // gravação em andamento seja finalizada e entregue pro upload ANTES de
+  // trocar de período, sair da tela ou finalizar o jogo (ver
+  // garantirSalvoAntesDeTrocar em VideoRecordingPanel.jsx). Sem isso, um
+  // trecho gravado mas ainda não cortado se perdia ao trocar de tela.
+  const videoPanelRef = useRef(null);
   const [positivoPendente, setPositivoPendente] = useState(null); // { variante, etapa: 'golQuestion'|'atleta' }
   const [confirmProximoTempo, setConfirmProximoTempo] = useState(false);
   const [subAntesDeAvancar, setSubAntesDeAvancar] = useState(false);
@@ -2819,14 +2900,21 @@ function ScoutJogo({ data, update, params, nav }) {
     return d;
   });
 
-  const mudarPeriodo = (n) => update((d) => {
-    const s = d.scouts[evento.id];
-    const c = s.cronometro;
-    if (c.rodando) { const el = (Date.now() - c.inicioEpoch) / 1000; c.acumuladoPeriodoSeg += el; c.acumuladoTotalSeg += el; c.rodando = false; c.inicioEpoch = null; }
-    c.acumuladoPeriodoSeg = 0;
-    s.periodoAtual = n;
-    return d;
-  });
+  const mudarPeriodo = async (n) => {
+    // Espera qualquer gravação em andamento ser cortada e entregue pra
+    // fila de envio ANTES de trocar de período — o painel é remontado do
+    // zero a cada período (pra nunca misturar vídeo entre jogos/períodos
+    // diferentes), e sem esperar aqui o trecho em andamento se perdia.
+    await videoPanelRef.current?.garantirSalvoAntesDeTrocar();
+    update((d) => {
+      const s = d.scouts[evento.id];
+      const c = s.cronometro;
+      if (c.rodando) { const el = (Date.now() - c.inicioEpoch) / 1000; c.acumuladoPeriodoSeg += el; c.acumuladoTotalSeg += el; c.rodando = false; c.inicioEpoch = null; }
+      c.acumuladoPeriodoSeg = 0;
+      s.periodoAtual = n;
+      return d;
+    });
+  };
   const iniciarCronometro = () => update((d) => { const s = d.scouts[evento.id]; s.cronometro.rodando = true; s.cronometro.inicioEpoch = Date.now(); return d; });
   const pausarCronometro = () => update((d) => {
     const s = d.scouts[evento.id]; const c = s.cronometro;
@@ -3030,20 +3118,21 @@ function ScoutJogo({ data, update, params, nav }) {
 
   return (
     <div>
-      <ScreenHeader title="Scout ao vivo" onBack={() => nav("evento-detalhe", { id: evento.id })} />
+      <ScreenHeader title="Scout ao vivo" onBack={async () => { await videoPanelRef.current?.garantirSalvoAntesDeTrocar(); nav("evento-detalhe", { id: evento.id }); }} />
       <div className="px-5">
         <AssistirVideoInline C={C} evento={evento} scout={scout} periodos={periodos} />
         <VideoRecordingPanel
-          key={scout.periodoAtual}
+          ref={videoPanelRef}
+          key={`${evento.id}-${scout.periodoAtual}`}
           C={C}
           partidaId={`${evento.id}_p${scout.periodoAtual}`}
           periodoLabel={periodoAtualObj.label}
           indiceInicial={(scout.videosPorPeriodo?.[scout.periodoAtual]?.segmentos || []).length}
-          onSegmentoEnviado={({ indice, key }) => update((d) => {
+          onSegmentoEnviado={({ indice, key, inicioSeg, duracaoSeg }) => update((d) => {
             const s = d.scouts[evento.id];
             s.videosPorPeriodo = s.videosPorPeriodo || {};
             const atual = s.videosPorPeriodo[scout.periodoAtual] || { segmentos: [] };
-            atual.segmentos = [...(atual.segmentos || []), { indice, key, enviadoEm: Date.now(), analiseStatus: "idle" }];
+            atual.segmentos = [...(atual.segmentos || []), { indice, key, enviadoEm: Date.now(), analiseStatus: "idle", inicioSeg, duracaoSeg }];
             s.videosPorPeriodo[scout.periodoAtual] = atual;
             return d;
           })}
@@ -3189,7 +3278,8 @@ function ScoutJogo({ data, update, params, nav }) {
         <div className="flex gap-2 mt-3">
           <Btn className="flex-1" onClick={desfazer}><Undo2 size={15} /> Desfazer</Btn>
           {isUltimoPeriodo ? (
-            <Btn variant="primary" className="flex-1" onClick={() => {
+            <Btn variant="primary" className="flex-1" onClick={async () => {
+              await videoPanelRef.current?.garantirSalvoAntesDeTrocar();
               const temItensPendentes = (scout.itensRevisaoPendentes || []).length > 0;
               const temSegmentoProcessando = Object.values(scout.videosPorPeriodo || {}).some((v) => (v.segmentos || []).some((s) => s.analiseStatus === "processando" || s.analiseStatus === "idle"));
               if (temItensPendentes || temSegmentoProcessando) nav("revisao-ia", { id: evento.id });
@@ -3591,7 +3681,7 @@ function RevisaoIA({ data, update, params, nav }) {
                       {seg.analiseStatus === "processando" && <Loader2 size={12} className="animate-spin" />}
                       {seg.analiseStatus === "concluido" && <CheckCircle2 size={12} color={pendentesDoSegmento > 0 ? C.orange : (eventosDoSegmento === 0 ? C.textFaint : C.lime)} />}
                       {seg.analiseStatus === "erro" && <AlertTriangle size={12} color={C.red} />}
-                      {seg.periodoLabel} · trecho {seg.indice + 1}
+                      {seg.periodoLabel} · {seg.inicioSeg != null ? `${formatMMSS(seg.inicioSeg)}–${formatMMSS(seg.inicioSeg + (seg.duracaoSeg || 0))}` : `trecho ${seg.indice + 1}`}
                       {seg.analiseStatus === "concluido" && pendentesDoSegmento > 0 && <span style={{ color: C.orange }}>⚠️ {pendentesDoSegmento}</span>}
                       {seg.analiseStatus === "concluido" && pendentesDoSegmento === 0 && eventosDoSegmento === 0 && <span style={{ color: C.textFaint }}>· vazio</span>}
                     </button>
