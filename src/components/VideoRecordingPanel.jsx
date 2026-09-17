@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Video, Circle, Square, RotateCcw, Info, Upload, FolderOpen, CloudUpload, CheckCircle2, AlertTriangle, Scissors, Maximize2, X } from "lucide-react";
 import { useVideoRecorder } from "../hooks/useVideoRecorder";
 import * as uploadService from "../services/videoUploadService";
@@ -7,7 +7,9 @@ import * as uploadService from "../services/videoUploadService";
 // segmento (sem o treinador perceber — a tela continua mostrando
 // "GRAVANDO" o tempo todo). Cada segmento sobe e é analisado sozinho
 // assim que fica pronto, ao invés de esperar o vídeo inteiro terminar.
-const SEGMENTO_DURACAO_SEG = 180; // 3min
+// Trechos mais curtos = cada chamada de IA processa menos vídeo = análise
+// mais rápida e menor risco de estourar o tempo limite lá no servidor.
+const SEGMENTO_DURACAO_SEG = 90; // 1min30s
 
 function formatMMSS(totalSeg) {
   const s = Math.max(0, Math.floor(totalSeg || 0));
@@ -132,7 +134,10 @@ function AguardandoPermissao({ C }) {
   );
 }
 
-export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado, onGravacaoIniciada }) {
+export const VideoRecordingPanel = forwardRef(function VideoRecordingPanel(
+  { C, partidaId, periodoLabel, indiceInicial = 0, onSegmentoEnviado, onGravacaoIniciada },
+  ref
+) {
   const rec = useVideoRecorder();
   const [mostrarDicas, setMostrarDicas] = useState(false);
   const [transmissaoAberta, setTransmissaoAberta] = useState(false);
@@ -145,8 +150,39 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
   // entre os dois vídeos diferentes.
   const proximoIndiceRef = useRef(indiceInicial);
   const cronometroTotalRef = useRef(0); // soma dos segmentos já concluídos, pro relógio não voltar a 00:00
+  // Guarda a função "resolve" de uma promise pendente enquanto o App está
+  // esperando a gravação atual terminar de verdade (ver useImperativeHandle
+  // abaixo) — por exemplo, antes de trocar de período ou sair da tela.
+  const resolverEsperaRef = useRef(null);
 
-  const enviarSegmento = (blob, indice) => {
+  // Expõe pro componente pai (App.jsx) uma forma de "arrancar" o vídeo em
+  // andamento ANTES de desmontar este painel (trocar de período, trocar de
+  // jogo, sair da tela). Sem isso, se o treinador trocasse de período ou
+  // saísse da tela com a gravação ainda ativa, o componente era desmontado
+  // no meio da gravação e o trecho em andamento se perdia — nunca chegava
+  // a ser entregue pro upload. Retorna uma Promise que só resolve depois
+  // que o trecho pendente já foi entregue pra fila de envio (o próprio
+  // IndexedDB garante a partir daí que ele não se perde, mesmo se a rede
+  // falhar — ver videoUploadService).
+  useImperativeHandle(ref, () => ({
+    garantirSalvoAntesDeTrocar: () => {
+      if (rec.status !== "gravando" && modoRef.current !== "rotacionando") {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        let resolvido = false;
+        const resolverUmaVez = () => { if (!resolvido) { resolvido = true; resolve(); } };
+        resolverEsperaRef.current = resolverUmaVez;
+        modoRef.current = "finalizando";
+        rec.parar();
+        // Rede de segurança: nunca trava a navegação por mais de 5s, mesmo
+        // se por algum motivo o "onstop" da gravação nunca disparar.
+        setTimeout(resolverUmaVez, 5000);
+      });
+    },
+  }));
+
+  const enviarSegmento = (blob, indice, inicioSeg, duracaoSeg) => {
     setSegmentos((prev) => [...prev, { indice, status: "enviando", progresso: 0, erro: null }]);
     const atualizar = (patch) => setSegmentos((prev) => prev.map((s) => (s.indice === indice ? { ...s, ...patch } : s)));
     uploadService.enviarNovoVideo(
@@ -157,7 +193,7 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
         onErro: (erro) => atualizar({ status: "erro", erro }),
         onConcluido: ({ key }) => {
           atualizar({ status: "concluido", progresso: 100 });
-          onSegmentoEnviado?.({ indice, key });
+          onSegmentoEnviado?.({ indice, key, inicioSeg, duracaoSeg });
         },
       }
     ).catch((e) => atualizar({ status: "erro", erro: e?.message || "Falha no envio." }));
@@ -192,8 +228,10 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
     const blob = rec.videoBlob;
     const indice = proximoIndiceRef.current;
     proximoIndiceRef.current += 1;
-    cronometroTotalRef.current += rec.segundos;
-    enviarSegmento(blob, indice);
+    const inicioSeg = cronometroTotalRef.current; // tempo de jogo em que este trecho começa
+    const duracaoSeg = rec.segundos;
+    cronometroTotalRef.current += duracaoSeg;
+    enviarSegmento(blob, indice, inicioSeg, duracaoSeg);
 
     if (modoRef.current === "rotacionando") {
       rec.reiniciar();
@@ -201,6 +239,10 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
       modoRef.current = "gravando";
     } else {
       modoRef.current = "parado";
+    }
+    if (resolverEsperaRef.current) {
+      resolverEsperaRef.current();
+      resolverEsperaRef.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rec.status, rec.videoBlob]);
@@ -434,4 +476,4 @@ export function VideoRecordingPanel({ C, partidaId, periodoLabel, indiceInicial 
       )}
     </div>
   );
-}
+});
