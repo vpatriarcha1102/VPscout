@@ -1084,6 +1084,64 @@ function SplashScreen({ onFim }) {
   );
 }
 
+// Fica FORA do componente App de propósito: assim, a cada consulta ao
+// IndexedDB (pra saber se tem vídeo subindo/com erro), só este componente
+// pequeno re-renderiza — não o app inteiro. Antes esse estado vivia lá em
+// cima, na raiz, e cada atualização (a cada poucos segundos, o tempo
+// todo) forçava React a re-renderizar TODA a árvore de telas por baixo,
+// o que pesava bastante, principalmente durante uma gravação.
+function UploadStatusBadge({ C, onAbrir }) {
+  const [status, setStatus] = useState(null); // null = nada pendente, não mostra nada
+  useEffect(() => {
+    let cancelado = false;
+    const checar = async () => {
+      try {
+        const registros = await videoStore.listarTodosRegistros();
+        if (cancelado) return;
+        let enviando = 0, erro = 0;
+        for (const r of registros) {
+          if (r.status === "concluido") continue;
+          if (r.status === "erro") erro++;
+          else enviando++; // preparando | enviando | aguardando_conexao
+        }
+        const novo = (enviando > 0 || erro > 0) ? { enviando, erro } : null;
+        // Só troca o estado se algo realmente mudou — evita re-render à
+        // toa quando a consulta dá exatamente o mesmo resultado de antes.
+        setStatus((atual) => (atual?.enviando === novo?.enviando && atual?.erro === novo?.erro) ? atual : novo);
+      } catch (e) { /* best-effort */ }
+    };
+    checar();
+    // 8s em vez de algo mais curto: é só um indicador, não precisa ser
+    // instantâneo, e cada consulta tem um custo pequeno mas real.
+    const id = setInterval(checar, 8000);
+    return () => { cancelado = true; clearInterval(id); };
+  }, []);
+
+  if (!status) return null;
+  return (
+    <button
+      onClick={onAbrir}
+      className="fixed flex items-center gap-1.5 px-2.5 py-1.5 rounded-full shadow-lg"
+      style={{
+        top: 10, right: 10, zIndex: 70,
+        background: status.erro > 0 ? C.redDim : C.surface2,
+        border: `1px solid ${status.erro > 0 ? C.red : C.line}`,
+        fontSize: 11,
+      }}
+      aria-label="Status de envio dos vídeos"
+    >
+      {status.erro > 0 ? (
+        <AlertTriangle size={13} color={C.red} />
+      ) : (
+        <CloudUpload size={13} color={C.lime} className="animate-pulse" />
+      )}
+      <span style={{ color: status.erro > 0 ? C.red : C.textMuted }}>
+        {status.erro > 0 ? `${status.erro} trecho(s) com erro` : `${status.enviando} vídeo(s) enviando…`}
+      </span>
+    </button>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState(emptyState());
   const [loaded, setLoaded] = useState(false);
@@ -1254,30 +1312,11 @@ export default function App() {
   // segundo plano mesmo depois de trocar de período/tela (o vídeo NUNCA
   // para de subir só porque você começou a gravar outra coisa), sem isso
   // não havia como saber, olhando pra qualquer outra tela, se ainda tinha
-  // trecho subindo ou se algum tinha falhado. Este contador consulta
-  // diretamente o IndexedDB (a fonte de verdade de todo upload, esteja
-  // ele sendo mostrado nesta tela ou não) e atualiza sozinho.
-  const [statusUploadsGlobal, setStatusUploadsGlobal] = useState({ enviando: 0, erro: 0 });
-  useEffect(() => {
-    if (sessao?.tipo === "aluno") return undefined;
-    let cancelado = false;
-    const checar = async () => {
-      try {
-        const registros = await videoStore.listarTodosRegistros();
-        if (cancelado) return;
-        let enviando = 0, erro = 0;
-        for (const r of registros) {
-          if (r.status === "concluido") continue;
-          if (r.status === "erro") erro++;
-          else enviando++; // preparando | enviando | aguardando_conexao
-        }
-        setStatusUploadsGlobal({ enviando, erro });
-      } catch (e) { /* best-effort */ }
-    };
-    checar();
-    const id = setInterval(checar, 4000);
-    return () => { cancelado = true; clearInterval(id); };
-  }, [sessao?.tipo]);
+  // trecho subindo ou se algum tinha falhado. Ver componente
+  // <UploadStatusBadge> mais abaixo — fica isolado de propósito, fora
+  // daqui, pra atualizar sozinho sem re-renderizar o app inteiro a cada
+  // consulta (isso ficava pesando bastante, mesmo o app parecendo lento
+  // de forma geral, principalmente durante a gravação).
 
   const recuperarVideosPendentes = async () => {
     setRecuperando(true);
@@ -1342,6 +1381,19 @@ export default function App() {
     if (!loaded || loadError || recuperacaoAutoDisparadaRef.current) return;
     recuperacaoAutoDisparadaRef.current = true;
     recuperarVideosPendentes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, loadError]);
+
+  // Além de tentar uma vez ao abrir, tenta de novo toda vez que a conexão
+  // voltar (evento "online" do navegador) — sem isso, se a internet caiu
+  // no meio de um jogo e só voltou minutos/horas depois com o app ainda
+  // aberto na mesma aba, nada disparava um novo reenvio sozinho até a
+  // próxima vez que o app fosse recarregado do zero.
+  useEffect(() => {
+    if (!loaded || loadError) return undefined;
+    const aoVoltarConexao = () => { recuperarVideosPendentes(); };
+    window.addEventListener("online", aoVoltarConexao);
+    return () => window.removeEventListener("online", aoVoltarConexao);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, loadError]);
 
@@ -1416,30 +1468,7 @@ export default function App() {
   return (
     <div className="w-full mx-auto" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap'); @keyframes pulse-live { 0%,100%{opacity:1} 50%{opacity:0.25} } @keyframes marquee-up { from{transform:translateY(0)} to{transform:translateY(-50%)} }`}</style>
-      {!readOnly && (statusUploadsGlobal.enviando > 0 || statusUploadsGlobal.erro > 0) && (
-        <button
-          onClick={() => setModalBackup(true)}
-          className="fixed flex items-center gap-1.5 px-2.5 py-1.5 rounded-full shadow-lg"
-          style={{
-            top: 10, right: 10, zIndex: 70,
-            background: statusUploadsGlobal.erro > 0 ? C.redDim : C.surface2,
-            border: `1px solid ${statusUploadsGlobal.erro > 0 ? C.red : C.line}`,
-            fontSize: 11,
-          }}
-          aria-label="Status de envio dos vídeos"
-        >
-          {statusUploadsGlobal.erro > 0 ? (
-            <AlertTriangle size={13} color={C.red} />
-          ) : (
-            <CloudUpload size={13} color={C.lime} className="animate-pulse" />
-          )}
-          <span style={{ color: statusUploadsGlobal.erro > 0 ? C.red : C.textMuted }}>
-            {statusUploadsGlobal.erro > 0
-              ? `${statusUploadsGlobal.erro} trecho(s) com erro`
-              : `${statusUploadsGlobal.enviando} vídeo(s) enviando…`}
-          </span>
-        </button>
-      )}
+      {!readOnly && <UploadStatusBadge C={C} onAbrir={() => setModalBackup(true)} />}
       <div className="pb-24">
         {showTabs && (
           <div className="px-5 pt-5 pb-3 flex items-center gap-3" style={{ borderBottom: `1px solid ${C.line}`, marginBottom: 4 }}>
@@ -3547,6 +3576,18 @@ function RevisaoIA({ data, update, params, nav }) {
   // usado durante o jogo ao vivo, agora rodando aqui.
   useAnaliseAoVivo({ evento, scout, atletas: atletasSeguro, update, uid });
 
+  // Sem isso, quando a internet cai, a tela só fica girando pra sempre
+  // sem explicar o motivo — o treinador não tem como saber se é só
+  // demora ou se está mesmo travado.
+  const [online, setOnline] = useState(() => (typeof navigator !== "undefined" ? navigator.onLine : true));
+  useEffect(() => {
+    const marcarOnline = () => setOnline(true);
+    const marcarOffline = () => setOnline(false);
+    window.addEventListener("online", marcarOnline);
+    window.addEventListener("offline", marcarOffline);
+    return () => { window.removeEventListener("online", marcarOnline); window.removeEventListener("offline", marcarOffline); };
+  }, []);
+
   if (!evento || !scout) return <div className="px-5 pt-6"><Btn onClick={() => nav("calendario")}>Voltar</Btn></div>;
   const atletas = atletasSeguro;
   const periodos = evento.periodos && evento.periodos.length ? evento.periodos : gerarPeriodos(2, 20);
@@ -3732,11 +3773,16 @@ function RevisaoIA({ data, update, params, nav }) {
             </div>
 
             {segmentosProcessando.length > 0 ? (
-              <div className="rounded-xl p-4 mb-3 flex flex-col items-center gap-1.5" style={{ background: C.surface2, border: `1px solid ${C.line}` }}>
-                <div className="flex items-center gap-2" style={{ color: C.textMuted, fontSize: 12 }}>
-                  <Loader2 size={14} className="animate-spin" /> Analisando {segmentosProcessando.length} trecho(s)…
+              <div className="rounded-xl p-4 mb-3 flex flex-col items-center gap-1.5" style={{ background: online ? C.surface2 : C.redDim, border: `1px solid ${online ? C.line : C.red}` }}>
+                <div className="flex items-center gap-2" style={{ color: online ? C.textMuted : C.red, fontSize: 12 }}>
+                  {online ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} color={C.red} />}
+                  {online ? `Analisando ${segmentosProcessando.length} trecho(s)…` : "Sem conexão com a internet"}
                 </div>
-                <span style={{ color: C.textFaint, fontSize: 10, textAlign: "center" }}>Pode aguardar aqui — os resultados aparecem sozinhos assim que ficarem prontos.</span>
+                <span style={{ color: online ? C.textFaint : C.red, fontSize: 10, textAlign: "center" }}>
+                  {online
+                    ? "Pode aguardar aqui — os resultados aparecem sozinhos assim que ficarem prontos."
+                    : "Os vídeos já estão salvos e nada se perde — assim que a internet voltar, o envio e a análise continuam sozinhos, sem precisar fazer nada."}
+                </span>
               </div>
             ) : segmentosComVideo.length > 0 && (
               <div className="rounded-xl p-3 mb-3 flex items-center gap-2" style={{ background: C.limeDim, border: `1px solid ${C.lime}` }}>
@@ -3909,8 +3955,14 @@ function RevisaoIA({ data, update, params, nav }) {
             <Check size={16} /> Confirmar revisão ({aptos.length} evento{aptos.length === 1 ? "" : "s"})
           </Btn>
         ) : (
-          <Btn className="w-full" onClick={continuarSemRevisar} disabled={segmentosProcessando.length > 0}>
-            {segmentosProcessando.length > 0 ? "Aguardando análise…" : <>Continuar <ChevronRight size={15} /></>}
+          <Btn
+            className="w-full"
+            onClick={() => {
+              if (segmentosProcessando.length > 0 && !window.confirm(`Ainda tem ${segmentosProcessando.length} trecho(s) sendo analisado(s). Pode continuar mesmo assim — a análise continua sozinha em segundo plano e, se achar algo, entra automaticamente nas estatísticas depois. Continuar agora?`)) return;
+              continuarSemRevisar();
+            }}
+          >
+            {segmentosProcessando.length > 0 ? <>Continuar mesmo assim <ChevronRight size={15} /></> : <>Continuar <ChevronRight size={15} /></>}
           </Btn>
         )}
       </div>
