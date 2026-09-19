@@ -5,7 +5,8 @@ import {
   Shield, Trophy, Dumbbell, ArrowLeft, Circle, CheckCircle2, XCircle,
   AlertCircle, FileText, Target, Footprints, Star, Repeat, Award, SlidersHorizontal, BarChart3,
   CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap,
-  Sparkles, Loader2, RotateCcw, HardDriveDownload, FolderOpen, CloudUpload
+  Sparkles, Loader2, RotateCcw, HardDriveDownload, FolderOpen, CloudUpload,
+  Pause, Volume2, VolumeX, RotateCw
 } from "lucide-react";
 import { installStorageShim } from "./lib/storage";
 import { VideoRecordingPanel } from "./components/VideoRecordingPanel";
@@ -1307,6 +1308,10 @@ export default function App() {
   // (formato: "{idDoJogo}_p{periodo}_s{indice}").
   const [recuperando, setRecuperando] = useState(false);
   const [resultadoRecuperacao, setResultadoRecuperacao] = useState(null);
+  // "1 de 2 · 37%" — sem isso, reenviar um trecho grande dava a impressão
+  // de estar travado (spinner parado por mais de um minuto, sem nenhum
+  // sinal de progresso), quando na real estava subindo normalmente.
+  const [progressoRecuperacao, setProgressoRecuperacao] = useState(null);
 
   // Indicador global de upload: como o upload de um trecho continua em
   // segundo plano mesmo depois de trocar de período/tela (o vídeo NUNCA
@@ -1330,15 +1335,19 @@ export default function App() {
       }
       let recuperados = 0;
       let falharam = 0;
+      let contador = 0;
       for (const registro of pendentes) {
+        contador++;
         const m = /^(.+)_p(\d+)_s(\d+)$/.exec(registro.partidaId);
         if (!m) { falharam++; continue; }
         const [, eventoId, periodoStr, indiceStr] = m;
         const periodoNumero = Number(periodoStr);
         const indice = Number(indiceStr);
+        setProgressoRecuperacao({ atual: contador, total: pendentes.length, percent: 0 });
         try {
           await new Promise((resolve, reject) => {
             uploadService.retomarUploadPendente(registro.partidaId, {
+              onProgresso: (percent) => setProgressoRecuperacao({ atual: contador, total: pendentes.length, percent }),
               onConcluido: ({ key }) => {
                 update((d) => {
                   const s = d.scouts[eventoId];
@@ -1367,6 +1376,7 @@ export default function App() {
       setResultadoRecuperacao({ erro: e?.message || "Falha ao procurar vídeos pendentes." });
     } finally {
       setRecuperando(false);
+      setProgressoRecuperacao(null);
     }
   };
 
@@ -1538,7 +1548,11 @@ export default function App() {
                 </p>
                 <Btn variant="outline" className="w-full" onClick={recuperarVideosPendentes} disabled={recuperando}>
                   {recuperando ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
-                  {recuperando ? "Procurando e reenviando..." : "Verificar e reenviar vídeos pendentes"}
+                  {recuperando
+                    ? (progressoRecuperacao
+                        ? `Reenviando ${progressoRecuperacao.atual} de ${progressoRecuperacao.total} — ${progressoRecuperacao.percent}%`
+                        : "Procurando vídeos pendentes...")
+                    : "Verificar e reenviar vídeos pendentes"}
                 </Btn>
                 {resultadoRecuperacao && (
                   <p className="mt-2" style={{ fontSize: 11, color: resultadoRecuperacao.erro || resultadoRecuperacao.falharam ? C.red : C.lime }}>
@@ -2666,12 +2680,150 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
 }
 
 
+// Tamanho/posição do player flutuante lembrados entre aberturas (mesmo
+// aparelho) — assim o treinador não precisa reajustar toda vez.
+const PLAYER_LARGURA_KEY = "vpscouts_player_largura_v1";
+const PLAYER_POS_KEY = "vpscouts_player_pos_v1";
+const PLAYER_LARGURA_PADRAO = 280;
+const PLAYER_LARGURA_MIN = 200;
+
+function clampNum(v, min, max) { return Math.min(max, Math.max(min, v)); }
+
+function lerLarguraSalva() {
+  try {
+    const v = Number(window.localStorage.getItem(PLAYER_LARGURA_KEY));
+    return v && v > 0 ? v : PLAYER_LARGURA_PADRAO;
+  } catch (e) { return PLAYER_LARGURA_PADRAO; }
+}
+
+function lerPosSalva(largura) {
+  try {
+    const raw = window.localStorage.getItem(PLAYER_POS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (typeof p?.x === "number" && typeof p?.y === "number") return p;
+    }
+  } catch (e) { /* ignora */ }
+  // Padrão: canto superior direito, logo abaixo do cabeçalho da tela —
+  // de propósito EM CIMA (e não embaixo, perto dos botões de marcar
+  // estatística) pra não atrapalhar o polegar enquanto anota o jogo.
+  const largOk = largura || PLAYER_LARGURA_PADRAO;
+  return { x: Math.max(8, (window.innerWidth || 360) - largOk - 12), y: 64 };
+}
+
+// Controles de vídeo próprios (sem o "controls" nativo do navegador):
+// precisa ser assim porque, quando o vídeo está deitado (rotate 90deg via
+// CSS pra caber num player na horizontal), os controles nativos giram
+// junto e ficam de lado — inutilizáveis. Também dá pra fazer os botões de
+// avançar/voltar 10s, que o player nativo não tem.
+function ControlesVideo({ C, videoRef, compacto }) {
+  const [pausado, setPausado] = useState(true);
+  const [tempoAtual, setTempoAtual] = useState(0);
+  const [duracao, setDuracao] = useState(0);
+  const [mudo, setMudo] = useState(false);
+  const arrastandoBarra = useRef(false);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const aoTempo = () => { if (!arrastandoBarra.current) setTempoAtual(v.currentTime || 0); };
+    const aoMeta = () => setDuracao(v.duration || 0);
+    const aoPlay = () => setPausado(false);
+    const aoPause = () => setPausado(true);
+    v.addEventListener("timeupdate", aoTempo);
+    v.addEventListener("loadedmetadata", aoMeta);
+    v.addEventListener("durationchange", aoMeta);
+    v.addEventListener("play", aoPlay);
+    v.addEventListener("pause", aoPause);
+    setMudo(v.muted);
+    if (v.readyState >= 1) aoMeta();
+    return () => {
+      v.removeEventListener("timeupdate", aoTempo);
+      v.removeEventListener("loadedmetadata", aoMeta);
+      v.removeEventListener("durationchange", aoMeta);
+      v.removeEventListener("play", aoPlay);
+      v.removeEventListener("pause", aoPause);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoRef.current]);
+
+  const alternarPlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {}); else v.pause();
+  };
+  const pular = (delta) => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = clampNum((v.currentTime || 0) + delta, 0, duracao || (v.currentTime || 0) + delta);
+    setTempoAtual(v.currentTime);
+  };
+  const alternarMudo = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setMudo(v.muted);
+  };
+
+  const tamBtn = compacto ? 26 : 32;
+  const tamIcone = compacto ? 14 : 17;
+
+  return (
+    <div className="px-2 pt-1 pb-1.5" style={{ background: "linear-gradient(0deg, rgba(0,0,0,0.85), rgba(0,0,0,0.55) 70%, transparent)" }}>
+      <div className="flex items-center gap-1.5">
+        <span style={{ color: "#fff", fontSize: 9, minWidth: 28, textAlign: "right" }}>{formatMMSS(Math.floor(tempoAtual))}</span>
+        <input
+          type="range"
+          min={0}
+          max={duracao || 0}
+          step="0.1"
+          value={Math.min(tempoAtual, duracao || 0)}
+          onPointerDown={() => { arrastandoBarra.current = true; }}
+          onPointerUp={() => { arrastandoBarra.current = false; }}
+          onChange={(e) => {
+            const v = videoRef.current;
+            const novo = Number(e.target.value);
+            setTempoAtual(novo);
+            if (v) v.currentTime = novo;
+          }}
+          className="flex-1"
+          style={{ accentColor: C.lime, height: 18, touchAction: "none" }}
+        />
+        <span style={{ color: "#fff", fontSize: 9, minWidth: 28 }}>{formatMMSS(Math.floor(duracao))}</span>
+      </div>
+      <div className="flex items-center justify-center gap-3 mt-1">
+        <button onClick={() => pular(-10)} className="flex items-center justify-center rounded-full" style={{ width: tamBtn, height: tamBtn, background: "rgba(255,255,255,0.12)", color: "#fff" }} aria-label="Voltar 10 segundos">
+          <RotateCcw size={tamIcone} />
+        </button>
+        <button onClick={alternarPlay} className="flex items-center justify-center rounded-full" style={{ width: tamBtn + 8, height: tamBtn + 8, background: C.lime, color: "#00110d" }} aria-label={pausado ? "Reproduzir" : "Pausar"}>
+          {pausado ? <Play size={tamIcone + 2} fill="#00110d" /> : <Pause size={tamIcone + 2} fill="#00110d" />}
+        </button>
+        <button onClick={() => pular(10)} className="flex items-center justify-center rounded-full" style={{ width: tamBtn, height: tamBtn, background: "rgba(255,255,255,0.12)", color: "#fff" }} aria-label="Avançar 10 segundos">
+          <RotateCw size={tamIcone} />
+        </button>
+        <button onClick={alternarMudo} className="flex items-center justify-center rounded-full" style={{ width: tamBtn, height: tamBtn, background: "rgba(255,255,255,0.12)", color: "#fff", marginLeft: 6 }} aria-label={mudo ? "Ativar som" : "Silenciar"}>
+          {mudo ? <VolumeX size={tamIcone} /> : <Volume2 size={tamIcone} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AssistirVideoInline({ C, evento, scout, periodos }) {
   const [aberto, setAberto] = useState(false);
   const [urls, setUrls] = useState({});
   const [ativa, setAtiva] = useState(null);
   const [carregando, setCarregando] = useState(false);
   const [minimizado, setMinimizado] = useState(false);
+  const [largura, setLargura] = useState(() => lerLarguraSalva());
+  const [pos, setPos] = useState(() => lerPosSalva(lerLarguraSalva()));
+  const [vertical, setVertical] = useState(false); // vídeo gravado com o celular na vertical?
+  const [videoPronto, setVideoPronto] = useState(false);
+  const videoRef = useRef(null);
+  const larguraRef = useRef(largura);
+  const posRef = useRef(pos);
+  const arrastoRef = useRef(null);
+  const redimensionoRef = useRef(null);
 
   const porPeriodo = periodos
     .map((p) => ({ periodo: p, segmentos: (scout.videosPorPeriodo?.[p.numero]?.segmentos || []).filter((s) => s.key) }))
@@ -2683,6 +2835,7 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
     const chave = `p${periodoNumero}-s${seg.indice}`;
     setAtiva(chave);
     setMinimizado(false);
+    setVideoPronto(false);
     if (!urls[chave]) {
       setCarregando(true);
       try {
@@ -2691,6 +2844,57 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
       } catch (e) { /* ignora */ }
       setCarregando(false);
     }
+  };
+
+  const altura = Math.round((largura * 9) / 16);
+
+  // Arrastar (pela barra de título) — usa position:fixed com left/top em
+  // pixel, clampado pra nunca sair da tela. touchAction:none na barra
+  // evita que o dedo arraste a PÁGINA junto no celular.
+  const onArrastoMove = (e) => {
+    if (!arrastoRef.current) return;
+    const dx = e.clientX - arrastoRef.current.startX;
+    const dy = e.clientY - arrastoRef.current.startY;
+    const novo = {
+      x: clampNum(arrastoRef.current.origX + dx, 4, (window.innerWidth || 360) - larguraRef.current - 4),
+      y: clampNum(arrastoRef.current.origY + dy, 4, (window.innerHeight || 640) - 60),
+    };
+    posRef.current = novo;
+    setPos(novo);
+  };
+  const onArrastoUp = () => {
+    arrastoRef.current = null;
+    window.removeEventListener("pointermove", onArrastoMove);
+    window.removeEventListener("pointerup", onArrastoUp);
+    try { window.localStorage.setItem(PLAYER_POS_KEY, JSON.stringify(posRef.current)); } catch (e) { /* ignora */ }
+  };
+  const onArrastoDown = (e) => {
+    arrastoRef.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+    window.addEventListener("pointermove", onArrastoMove);
+    window.addEventListener("pointerup", onArrastoUp);
+  };
+
+  // Redimensionar (alça no canto inferior direito) — só muda a LARGURA;
+  // a altura acompanha sozinha pra manter a proporção horizontal (16:9).
+  const onResizeMove = (e) => {
+    if (!redimensionoRef.current) return;
+    const dx = e.clientX - redimensionoRef.current.startX;
+    const maxLargura = Math.min(480, (window.innerWidth || 360) - 24);
+    const nova = clampNum(redimensionoRef.current.origLargura + dx, PLAYER_LARGURA_MIN, maxLargura);
+    larguraRef.current = nova;
+    setLargura(nova);
+  };
+  const onResizeUp = () => {
+    redimensionoRef.current = null;
+    window.removeEventListener("pointermove", onResizeMove);
+    window.removeEventListener("pointerup", onResizeUp);
+    try { window.localStorage.setItem(PLAYER_LARGURA_KEY, String(larguraRef.current)); } catch (e) { /* ignora */ }
+  };
+  const onResizeDown = (e) => {
+    e.stopPropagation();
+    redimensionoRef.current = { startX: e.clientX, origLargura: largura };
+    window.addEventListener("pointermove", onResizeMove);
+    window.addEventListener("pointerup", onResizeUp);
   };
 
   const videoAberto = ativa && urls[ativa] && !minimizado;
@@ -2724,14 +2928,16 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
 
       {/* Flutuante de verdade (position: fixed) — continua visível na tela
           mesmo rolando a página pra marcar estatísticas mais abaixo,
-          porque não faz parte do fluxo normal da página, fica "por cima". */}
+          porque não faz parte do fluxo normal da página, fica "por cima".
+          Arrastável pela barra de título e redimensionável pela alça no
+          canto — posição e tamanho ficam salvos pro próximo vídeo. */}
       {videoAberto && (
         <div
           style={{
             position: "fixed",
-            right: 12,
-            bottom: 84,
-            width: 168,
+            left: pos.x,
+            top: pos.y,
+            width: largura,
             zIndex: 60,
             background: "#000",
             borderRadius: 12,
@@ -2740,14 +2946,65 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
             boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
           }}
         >
-          <div className="flex items-center justify-between px-2 py-1" style={{ background: C.surface2 }}>
-            <span style={{ color: C.textFaint, fontSize: 9 }}>vídeo</span>
+          <div
+            onPointerDown={onArrastoDown}
+            className="flex items-center justify-between px-2 py-1"
+            style={{ background: C.surface2, cursor: "grab", touchAction: "none" }}
+          >
+            <span style={{ color: C.textFaint, fontSize: 9 }}>⠿ arraste pra mover</span>
             <div className="flex items-center gap-2">
               <button onClick={() => setMinimizado(true)} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>—</button>
               <button onClick={() => setAtiva(null)} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>✕</button>
             </div>
           </div>
-          <video src={urls[ativa]} controls playsInline className="w-full block" style={{ maxHeight: 220 }} />
+
+          <div style={{ width: largura, height: altura, position: "relative", background: "#000", overflow: "hidden" }}>
+            <video
+              ref={videoRef}
+              src={urls[ativa]}
+              playsInline
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget;
+                setVertical(v.videoWidth > 0 && v.videoHeight > v.videoWidth);
+                setVideoPronto(true);
+              }}
+              style={
+                vertical
+                  ? {
+                      position: "absolute",
+                      top: "50%",
+                      left: "50%",
+                      width: altura,
+                      height: largura,
+                      transform: "translate(-50%, -50%) rotate(90deg)",
+                      objectFit: "cover",
+                      opacity: videoPronto ? 1 : 0,
+                    }
+                  : { width: "100%", height: "100%", objectFit: "contain", opacity: videoPronto ? 1 : 0 }
+              }
+            />
+            {!videoPronto && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Loader2 size={22} className="animate-spin" color={C.textMuted} />
+              </div>
+            )}
+          </div>
+
+          {videoPronto && <ControlesVideo C={C} videoRef={videoRef} compacto={largura < 240} />}
+
+          {/* Alça de redimensionar — arraste pra deixar o player maior ou
+              menor (a altura acompanha sozinha, mantendo a horizontal). */}
+          <div
+            onPointerDown={onResizeDown}
+            className="absolute"
+            style={{
+              right: 2, bottom: 2, width: 22, height: 22, cursor: "nwse-resize", touchAction: "none",
+              display: "flex", alignItems: "flex-end", justifyContent: "flex-end", padding: 3,
+            }}
+            aria-label="Redimensionar player"
+          >
+            <div style={{ width: 12, height: 12, borderRight: `2px solid ${C.textFaint}`, borderBottom: `2px solid ${C.textFaint}`, borderRadius: 2 }} />
+          </div>
         </div>
       )}
     </div>
