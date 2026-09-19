@@ -6,20 +6,15 @@
 // mandar pra Gemini, esperar processar e pedir a análise).
 
 import { HeadObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
-import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { getR2Client, getBucket, verificarToken, salvarJSON, sanitizarPartidaId } from "./_r2Client.js";
-import { writeFile, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-function extensaoPara(contentType) {
-  if (contentType?.includes("mp4")) return "mp4";
-  if (contentType?.includes("quicktime")) return "mov";
-  return "webm";
-}
 
 const LIMITE_SEGURO_BYTES = 500 * 1024 * 1024; // 500MB
+// Tempo que a URL assinada do vídeo fica válida — só precisa durar o
+// suficiente pra Gemini buscar o arquivo sozinha (ela busca no início da
+// chamada a generateContent, então poucos minutos já sobram).
+const EXPIRA_URL_ASSINADA_SEGUNDOS = 30 * 60; // 30min
 
 const EVENTOS_SCHEMA = {
   type: SchemaType.ARRAY,
@@ -62,12 +57,6 @@ const EVENTOS_SCHEMA = {
     required: ["timestampSeg", "tipo", "confianca"],
   },
 };
-
-async function streamParaBuffer(stream) {
-  const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  return Buffer.concat(chunks);
-}
 
 function montarPrompt(jogadoresCadastrados, coresUniforme) {
   const elenco = (jogadoresCadastrados || [])
@@ -245,39 +234,21 @@ export async function handler(event) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY não configurada nas variáveis de ambiente da Netlify.");
 
-    const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: videoKey }));
-    const bufferVideo = await streamParaBuffer(obj.Body);
-
-    // A biblioteca do Gemini (uploadFile) exige um CAMINHO de arquivo em
-    // disco, não aceita o conteúdo binário direto — por isso gravamos o
-    // vídeo num arquivo temporário antes de enviar, e apagamos depois.
-    const caminhoTemp = join(tmpdir(), `vpscouts-${partidaId}-${Date.now()}.${extensaoPara(contentType)}`);
-    await writeFile(caminhoTemp, bufferVideo);
-
-    const fileManager = new GoogleAIFileManager(apiKey);
-    let uploadResult;
-    try {
-      uploadResult = await fileManager.uploadFile(caminhoTemp, {
-        mimeType: contentType,
-        displayName: `vpscouts-${partidaId}`,
-      });
-    } finally {
-      await unlink(caminhoTemp).catch(() => {});
-    }
-
-    let arquivo = uploadResult.file;
-    const INICIO_ESPERA = Date.now();
-    const LIMITE_ESPERA_MS = 3 * 60 * 1000; // 3 minutos — evita ficar "processando" pra sempre
-    while (arquivo.state === FileState.PROCESSING) {
-      if (Date.now() - INICIO_ESPERA > LIMITE_ESPERA_MS) {
-        throw new Error("O processamento do vídeo pela IA demorou demais e foi cancelado. Tente novamente — se persistir, o trecho pode estar corrompido ou vazio demais.");
-      }
-      await new Promise((r) => setTimeout(r, 5000));
-      arquivo = await fileManager.getFile(arquivo.name);
-    }
-    if (arquivo.state === FileState.FAILED) {
-      throw new Error("A Gemini não conseguiu processar o vídeo enviado.");
-    }
+    // Antes: baixávamos o vídeo inteiro do R2 pra memória da function,
+    // gravávamos num arquivo temporário, e mandávamos de novo pro File API
+    // da Gemini (upload) — três transferências completas do arquivo, uma
+    // atrás da outra, mais um loop de espera até o File API terminar de
+    // "processar" o upload antes de poder analisar.
+    // Agora: a Gemini aceita buscar o vídeo sozinha a partir de uma URL —
+    // então só assinamos uma URL de leitura do R2 (igual à que já usamos
+    // pra reprodução) e mandamos ela direto no pedido de análise. Isso
+    // elimina duas transferências inteiras do vídeo e a espera do File API,
+    // que juntas eram a maior parte do tempo de "processando" na tela.
+    const urlAssinada = await getSignedUrl(
+      client,
+      new GetObjectCommand({ Bucket: bucket, Key: videoKey }),
+      { expiresIn: EXPIRA_URL_ASSINADA_SEGUNDOS }
+    );
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
@@ -298,7 +269,7 @@ export async function handler(event) {
     });
 
     const resultado = await model.generateContent([
-      { fileData: { fileUri: arquivo.uri, mimeType: arquivo.mimeType } },
+      { fileData: { fileUri: urlAssinada, mimeType: contentType } },
       { text: montarPrompt(jogadoresCadastrados, coresUniforme) },
     ]);
 
@@ -326,8 +297,6 @@ export async function handler(event) {
       atualizadoEm: Date.now(),
       eventos: eventosIA,
     });
-
-    try { await fileManager.deleteFile(arquivo.name); } catch { /* best-effort */ }
   } catch (e) {
     console.error("[analyze-video-background]", e);
     await salvarJSON(statusKey, {
