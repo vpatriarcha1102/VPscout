@@ -81,7 +81,7 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
     const temPendente = Object.values(videosPorPeriodo).some((v) => (v.segmentos || []).some((s) => s.analiseStatus === "processando"));
     if (!temPendente) return undefined;
 
-    const id = setInterval(async () => {
+    const verificarPendentes = async () => {
       const service = getAIAnalysisService();
       const pendentes = [];
       Object.entries(videosPorPeriodo).forEach(([periodoStr, v]) => {
@@ -129,9 +129,13 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
           }
         } catch (e) { /* tenta de novo no próximo tick */ }
       }
-    }, 6000);
+    };
 
-    return () => clearInterval(id);
+    const id = setInterval(verificarPendentes, 6000);
+    // Assim que a conexão voltar, verifica na hora — sem isso, dependendo
+    // do momento, dava pra esperar até 6s à toa mesmo já tendo internet.
+    window.addEventListener("online", verificarPendentes);
+    return () => { clearInterval(id); window.removeEventListener("online", verificarPendentes); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assinatura]);
 }
