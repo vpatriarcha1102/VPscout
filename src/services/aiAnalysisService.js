@@ -20,12 +20,26 @@ async function postJSON(path, body) {
 export class AIAnalysisService {
   async iniciarAnalise({ partidaId, videoKey, jogadoresCadastrados, coresUniforme }) {
     if (!partidaId || !videoKey) throw new Error("partidaId e videoKey são obrigatórios.");
-    const res = await fetch("/.netlify/functions/analyze-video-background", {
+    const workerUrl = import.meta.env.VITE_AI_WORKER_URL;
+    if (!workerUrl) {
+      throw new Error(
+        "VITE_AI_WORKER_URL não configurada — a análise por IA não sabe pra onde mandar o vídeo. " +
+        "Configure essa variável de ambiente (URL do Cloudflare Worker, veja cloudflare-worker/README.md) e faça um novo deploy."
+      );
+    }
+    // Diferente da chamada antiga (Netlify), essa aqui só retorna quando a
+    // análise termina de verdade — pode levar de segundos a alguns
+    // minutos, dependendo do tamanho do trecho. Isso é esperado e não
+    // trava a tela: quem chama iniciarAnalise (useAnaliseAoVivo) já trata
+    // como "dispara e esquece" — o "Analisando..." que aparece pro
+    // treinador vem do polling em consultarStatus (esse sim continua
+    // rápido, na Netlify, sem mudança nenhuma).
+    const res = await fetch(workerUrl, {
       method: "POST",
       headers: headersComToken(),
       body: JSON.stringify({ partidaId, videoKey, jogadoresCadastrados, coresUniforme }),
     });
-    if (!res.ok && res.status !== 202) {
+    if (!res.ok) {
       let detalhe = "";
       try { detalhe = (await res.json()).erro || ""; } catch { /* ignore */ }
       throw new Error(detalhe || `Falha ao iniciar a análise (${res.status}).`);
