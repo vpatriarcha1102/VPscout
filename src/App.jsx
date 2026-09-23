@@ -6,7 +6,7 @@ import {
   AlertCircle, FileText, Target, Footprints, Star, Repeat, Award, SlidersHorizontal, BarChart3,
   CircleDot, Zap, Hand, CreditCard, AlertTriangle, ThumbsUp, User, ChevronLeft, LogOut, Lock, GraduationCap,
   Sparkles, Loader2, RotateCcw, HardDriveDownload, FolderOpen, CloudUpload,
-  Pause, Volume2, VolumeX, RotateCw
+  Pause, Volume2, VolumeX, RotateCw, Maximize2, Minimize2
 } from "lucide-react";
 import { installStorageShim } from "./lib/storage";
 import { VideoRecordingPanel } from "./components/VideoRecordingPanel";
@@ -16,6 +16,8 @@ import { obterUrlReproducao } from "./services/videoPlaybackService";
 import { gerarEventosRevisaveis, aplicarEventosConfirmados } from "./lib/iaEventConverter";
 import * as videoStore from "./lib/videoStore";
 import * as uploadService from "./services/videoUploadService";
+import { firebaseConfigurado } from "./lib/firebase";
+import { headersComToken } from "./lib/apiToken";
 
 installStorageShim();
 
@@ -62,6 +64,7 @@ const ACOES_LINHA = [
 ];
 const ACOES_GOLEIRO = [
   { key: "defesa", label: "DEFESA", icon: Hand, color: C.blue },
+  { key: "passe", label: "PASSE", icon: Footprints, color: C.text, variants: ["Certo", "Errado"] },
   { key: "gol", label: "GOL", icon: Target, color: C.lime },
   { key: "assistencia", label: "ASSISTÊNCIA", icon: Zap, color: C.lime },
   { key: "erro", label: "ERRO", icon: X, color: C.red, variants: ["Simples", "Gerou gol adversário", "Gerou chance perigosa"] },
@@ -1312,6 +1315,10 @@ export default function App() {
   // de estar travado (spinner parado por mais de um minuto, sem nenhum
   // sinal de progresso), quando na real estava subindo normalmente.
   const [progressoRecuperacao, setProgressoRecuperacao] = useState(null);
+  // Diagnóstico de configuração (Netlify env vars) — null = ainda não
+  // rodou nessa sessão do modal.
+  const [diagnostico, setDiagnostico] = useState(null);
+  const [verificandoDiagnostico, setVerificandoDiagnostico] = useState(false);
 
   // Indicador global de upload: como o upload de um trecho continua em
   // segundo plano mesmo depois de trocar de período/tela (o vídeo NUNCA
@@ -1322,6 +1329,28 @@ export default function App() {
   // daqui, pra atualizar sozinho sem re-renderizar o app inteiro a cada
   // consulta (isso ficava pesando bastante, mesmo o app parecendo lento
   // de forma geral, principalmente durante a gravação).
+
+  // Chama a function de diagnóstico (só booleans, nunca valores reais) pra
+  // responder na hora "por que a IA não analisa" ou "por que os vídeos não
+  // sobem" sem precisar ir atrás disso nos logs da Netlify.
+  const verificarConfiguracao = async () => {
+    setVerificandoDiagnostico(true);
+    setDiagnostico(null);
+    try {
+      const res = await fetch("/.netlify/functions/check-config", {
+        method: "POST",
+        headers: headersComToken(),
+        body: "{}",
+      });
+      if (!res.ok) throw new Error(`Falha ao consultar (HTTP ${res.status}).`);
+      const dados = await res.json();
+      setDiagnostico({ ok: true, ...dados });
+    } catch (e) {
+      setDiagnostico({ ok: false, erro: e?.message || "Falha ao consultar." });
+    } finally {
+      setVerificandoDiagnostico(false);
+    }
+  };
 
   const recuperarVideosPendentes = async () => {
     setRecuperando(true);
@@ -1479,6 +1508,18 @@ export default function App() {
     <div className="w-full mx-auto" style={{ background: C.bg, minHeight: 700, maxWidth: 480, fontFamily: FONT_BODY }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap'); @keyframes pulse-live { 0%,100%{opacity:1} 50%{opacity:0.25} } @keyframes marquee-up { from{transform:translateY(0)} to{transform:translateY(-50%)} }`}</style>
       {!readOnly && <UploadStatusBadge C={C} onAbrir={() => setModalBackup(true)} />}
+      {!readOnly && !firebaseConfigurado && (
+        <button
+          onClick={() => setModalBackup(true)}
+          className="fixed left-2 right-2 flex items-center gap-2 px-3 py-2 rounded-lg text-left"
+          style={{ top: 54, zIndex: 65, background: C.redDim, border: `1px solid ${C.red}`, maxWidth: 456, margin: "0 auto" }}
+        >
+          <AlertTriangle size={15} color={C.red} className="shrink-0" />
+          <span style={{ color: C.red, fontSize: 11, lineHeight: 1.3 }}>
+            Sincronização entre aparelhos desligada — os alunos não veem suas atualizações ao vivo. Toque pra ver como configurar.
+          </span>
+        </button>
+      )}
       <div className="pb-24">
         {showTabs && (
           <div className="px-5 pt-5 pb-3 flex items-center gap-3" style={{ borderBottom: `1px solid ${C.line}`, marginBottom: 4 }}>
@@ -1562,6 +1603,44 @@ export default function App() {
                       ? "Nenhum vídeo pendente encontrado neste aparelho."
                       : `${resultadoRecuperacao.recuperados} de ${resultadoRecuperacao.total} trecho(s) reenviado(s) com sucesso${resultadoRecuperacao.falharam ? ` — ${resultadoRecuperacao.falharam} ainda falharam (tente de novo)` : ""}.`}
                   </p>
+                )}
+              </div>
+
+              <div className="mt-1 pt-3" style={{ borderTop: `1px solid ${C.line}` }}>
+                <p style={{ color: C.text, fontSize: 12, fontWeight: 600 }}>Diagnóstico de configuração</p>
+                <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-0.5 mb-2">
+                  Confere se as variáveis de ambiente da Netlify estão configuradas — sem isso, a análise por IA e a
+                  sincronização entre aparelhos não funcionam. Nunca mostra os valores, só se cada uma existe.
+                </p>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-2 h-2 rounded-full shrink-0" style={{ background: firebaseConfigurado ? C.lime : C.red }} />
+                  <span style={{ fontSize: 11, color: C.textMuted }}>
+                    Sincronização entre aparelhos (Firebase): {firebaseConfigurado ? "configurada" : "NÃO configurada"}
+                  </span>
+                </div>
+                <Btn variant="outline" className="w-full" onClick={verificarConfiguracao} disabled={verificandoDiagnostico}>
+                  {verificandoDiagnostico ? <Loader2 size={15} className="animate-spin" /> : <AlertCircle size={15} />}
+                  {verificandoDiagnostico ? "Verificando..." : "Verificar variáveis do servidor"}
+                </Btn>
+                {diagnostico && !diagnostico.ok && (
+                  <p className="mt-2" style={{ fontSize: 11, color: C.red }}>Erro: {diagnostico.erro}</p>
+                )}
+                {diagnostico?.ok && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    {[
+                      ["Vídeo — conta (VIDEO_STORAGE_ACCOUNT_ID)", diagnostico.video?.VIDEO_STORAGE_ACCOUNT_ID],
+                      ["Vídeo — chave de acesso (VIDEO_STORAGE_ACCESS_KEY_ID)", diagnostico.video?.VIDEO_STORAGE_ACCESS_KEY_ID],
+                      ["Vídeo — chave secreta (VIDEO_STORAGE_SECRET_ACCESS_KEY)", diagnostico.video?.VIDEO_STORAGE_SECRET_ACCESS_KEY],
+                      ["Vídeo — bucket (VIDEO_STORAGE_BUCKET)", diagnostico.video?.VIDEO_STORAGE_BUCKET],
+                      ["IA (GEMINI_API_KEY)", diagnostico.ia?.GEMINI_API_KEY],
+                      ["Token do app (APP_SHARED_TOKEN)", diagnostico.seguranca?.APP_SHARED_TOKEN],
+                    ].map(([label, ok]) => (
+                      <div key={label} className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ background: ok ? C.lime : C.red }} />
+                        <span style={{ fontSize: 11, color: C.textMuted }}>{label}: {ok ? "presente" : "AUSENTE"}</span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
@@ -2684,10 +2763,18 @@ function SubstituicaoModal({ emQuadra, foraDeQuadra, jaJogouAntes, mostrarAviso,
 // aparelho) — assim o treinador não precisa reajustar toda vez.
 const PLAYER_LARGURA_KEY = "vpscouts_player_largura_v1";
 const PLAYER_POS_KEY = "vpscouts_player_pos_v1";
+const PLAYER_ROTACAO_KEY = "vpscouts_player_rotacao_v1";
 const PLAYER_LARGURA_PADRAO = 280;
 const PLAYER_LARGURA_MIN = 200;
 
 function clampNum(v, min, max) { return Math.min(max, Math.max(min, v)); }
+
+function lerRotacaoSalva() {
+  try {
+    const v = Number(window.localStorage.getItem(PLAYER_ROTACAO_KEY));
+    return [0, 90, 180, 270].includes(v) ? v : 0;
+  } catch (e) { return 0; }
+}
 
 function lerLarguraSalva() {
   try {
@@ -2716,7 +2803,7 @@ function lerPosSalva(largura) {
 // CSS pra caber num player na horizontal), os controles nativos giram
 // junto e ficam de lado — inutilizáveis. Também dá pra fazer os botões de
 // avançar/voltar 10s, que o player nativo não tem.
-function ControlesVideo({ C, videoRef, compacto }) {
+function ControlesVideo({ C, videoRef, compacto, emTelaCheia, onAlternarTelaCheia }) {
   const [pausado, setPausado] = useState(true);
   const [tempoAtual, setTempoAtual] = useState(0);
   const [duracao, setDuracao] = useState(0);
@@ -2727,7 +2814,23 @@ function ControlesVideo({ C, videoRef, compacto }) {
     const v = videoRef.current;
     if (!v) return;
     const aoTempo = () => { if (!arrastandoBarra.current) setTempoAtual(v.currentTime || 0); };
-    const aoMeta = () => setDuracao(v.duration || 0);
+    const aoMeta = () => {
+      if (!isFinite(v.duration)) {
+        // Bug conhecido do Chrome: um blob webm gravado pelo MediaRecorder
+        // às vezes não vem com a duração total no cabeçalho, e o vídeo
+        // mostra "Infinity" no lugar do tempo total (visto no seu teste).
+        // Ir pro fim e voltar força o navegador a calcular a duração real.
+        v.currentTime = 1e9;
+        const aoAchar = () => {
+          v.removeEventListener("timeupdate", aoAchar);
+          v.currentTime = 0;
+          setDuracao(isFinite(v.duration) ? v.duration : 0);
+        };
+        v.addEventListener("timeupdate", aoAchar);
+      } else {
+        setDuracao(v.duration);
+      }
+    };
     const aoPlay = () => setPausado(false);
     const aoPause = () => setPausado(true);
     v.addEventListener("timeupdate", aoTempo);
@@ -2804,6 +2907,11 @@ function ControlesVideo({ C, videoRef, compacto }) {
         <button onClick={alternarMudo} className="flex items-center justify-center rounded-full" style={{ width: tamBtn, height: tamBtn, background: "rgba(255,255,255,0.12)", color: "#fff", marginLeft: 6 }} aria-label={mudo ? "Ativar som" : "Silenciar"}>
           {mudo ? <VolumeX size={tamIcone} /> : <Volume2 size={tamIcone} />}
         </button>
+        {onAlternarTelaCheia && (
+          <button onClick={onAlternarTelaCheia} className="flex items-center justify-center rounded-full" style={{ width: tamBtn, height: tamBtn, background: "rgba(255,255,255,0.12)", color: "#fff" }} aria-label={emTelaCheia ? "Sair da tela cheia" : "Tela cheia"}>
+            {emTelaCheia ? <Minimize2 size={tamIcone} /> : <Maximize2 size={tamIcone} />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2817,13 +2925,41 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
   const [minimizado, setMinimizado] = useState(false);
   const [largura, setLargura] = useState(() => lerLarguraSalva());
   const [pos, setPos] = useState(() => lerPosSalva(lerLarguraSalva()));
-  const [vertical, setVertical] = useState(false); // vídeo gravado com o celular na vertical?
   const [videoPronto, setVideoPronto] = useState(false);
+  const [rotacao, setRotacao] = useState(() => lerRotacaoSalva());
+  const [emTelaCheia, setEmTelaCheia] = useState(false);
+  const [tamanhoTela, setTamanhoTela] = useState({ w: 0, h: 0 });
   const videoRef = useRef(null);
+  const containerRef = useRef(null);
   const larguraRef = useRef(largura);
   const posRef = useRef(pos);
   const arrastoRef = useRef(null);
   const redimensionoRef = useRef(null);
+  const autoAvancarRef = useRef(false);
+
+  // Sincroniza com a tela cheia real do navegador — cobre tanto quando
+  // você aperta o botão quanto quando sai pelo gesto/botão voltar do
+  // próprio celular (senão o ícone ficava "preso" mostrando tela cheia
+  // mesmo depois de já ter saído).
+  useEffect(() => {
+    const aoMudar = () => {
+      const cheio = document.fullscreenElement === containerRef.current;
+      setEmTelaCheia(cheio);
+      if (cheio) setTamanhoTela({ w: window.innerWidth, h: window.innerHeight });
+    };
+    document.addEventListener("fullscreenchange", aoMudar);
+    return () => document.removeEventListener("fullscreenchange", aoMudar);
+  }, []);
+
+  // Se o celular girar (retrato ↔ paisagem) enquanto está em tela cheia,
+  // reajusta o tamanho — senão o vídeo ficava com a proporção antiga até
+  // sair e entrar de novo na tela cheia.
+  useEffect(() => {
+    if (!emTelaCheia) return undefined;
+    const aoRedimensionar = () => setTamanhoTela({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", aoRedimensionar);
+    return () => window.removeEventListener("resize", aoRedimensionar);
+  }, [emTelaCheia]);
 
   const porPeriodo = periodos
     .map((p) => ({ periodo: p, segmentos: (scout.videosPorPeriodo?.[p.numero]?.segmentos || []).filter((s) => s.key) }))
@@ -2846,7 +2982,30 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
     }
   };
 
+  // Como cada trecho gravado vira um arquivo separado, "assistir o período
+  // inteiro" tecnicamente é assistir vários arquivos em sequência. Pra
+  // quem tá vendo não perceber a costura, quando um trecho termina o
+  // player já carrega e toca o próximo sozinho — sem precisar tocar em
+  // nada, sem ficar saltando entre abas.
+  const irParaProximoSegmento = () => {
+    const m = /^p(\d+)-s(\d+)$/.exec(ativa || "");
+    if (!m) return;
+    const periodoNumero = Number(m[1]);
+    const indiceAtual = Number(m[2]);
+    const grupo = porPeriodo.find((g) => g.periodo.numero === periodoNumero);
+    if (!grupo) return;
+    const proximo = [...grupo.segmentos].sort((a, b) => a.indice - b.indice).find((s) => s.indice > indiceAtual);
+    if (proximo) {
+      autoAvancarRef.current = true;
+      abrirSegmento(periodoNumero, proximo);
+    }
+  };
+
   const altura = Math.round((largura * 9) / 16);
+  // Em tela cheia, o vídeo ocupa a tela inteira (não fica mais preso à
+  // proporção 16:9 do player pequeno) — usa o tamanho real da viewport.
+  const larguraEfetiva = emTelaCheia && tamanhoTela.w ? tamanhoTela.w : largura;
+  const alturaEfetiva = emTelaCheia && tamanhoTela.h ? tamanhoTela.h : altura;
 
   // Arrastar (pela barra de título) — usa position:fixed com left/top em
   // pixel, clampado pra nunca sair da tela. touchAction:none na barra
@@ -2899,6 +3058,41 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
 
   const videoAberto = ativa && urls[ativa] && !minimizado;
 
+  const girar = () => {
+    const nova = (rotacao + 90) % 360;
+    setRotacao(nova);
+    try { window.localStorage.setItem(PLAYER_ROTACAO_KEY, String(nova)); } catch (e) { /* ignora */ }
+  };
+  const rotacionado = rotacao === 90 || rotacao === 270;
+  const estiloVideo = rotacionado
+    ? {
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        width: alturaEfetiva,
+        height: larguraEfetiva,
+        transform: `translate(-50%, -50%) rotate(${rotacao}deg)`,
+        objectFit: "cover",
+        opacity: videoPronto ? 1 : 0,
+      }
+    : {
+        width: "100%",
+        height: "100%",
+        objectFit: "contain",
+        transform: rotacao === 180 ? "rotate(180deg)" : "none",
+        opacity: videoPronto ? 1 : 0,
+      };
+
+  const alternarTelaCheia = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else if (el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {});
+    }
+  };
+
   return (
     <div className="rounded-xl mb-4" style={{ background: C.surface2, border: `1px solid ${C.line}`, overflow: "hidden" }}>
       <button onClick={() => setAberto((v) => !v)} className="w-full flex items-center justify-between px-4 py-3">
@@ -2933,6 +3127,7 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
           canto — posição e tamanho ficam salvos pro próximo vídeo. */}
       {videoAberto && (
         <div
+          ref={containerRef}
           style={{
             position: "fixed",
             left: pos.x,
@@ -2940,48 +3135,41 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
             width: largura,
             zIndex: 60,
             background: "#000",
-            borderRadius: 12,
+            borderRadius: emTelaCheia ? 0 : 12,
             overflow: "hidden",
-            border: `1px solid ${C.line}`,
+            border: emTelaCheia ? "none" : `1px solid ${C.line}`,
             boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
           }}
         >
           <div
-            onPointerDown={onArrastoDown}
+            onPointerDown={emTelaCheia ? undefined : onArrastoDown}
             className="flex items-center justify-between px-2 py-1"
-            style={{ background: C.surface2, cursor: "grab", touchAction: "none" }}
+            style={{ background: C.surface2, cursor: emTelaCheia ? "default" : "grab", touchAction: "none" }}
           >
-            <span style={{ color: C.textFaint, fontSize: 9 }}>⠿ arraste pra mover</span>
+            <span style={{ color: C.textFaint, fontSize: 9 }}>{emTelaCheia ? "" : "⠿ arraste pra mover"}</span>
             <div className="flex items-center gap-2">
-              <button onClick={() => setMinimizado(true)} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>—</button>
-              <button onClick={() => setAtiva(null)} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>✕</button>
+              <button onClick={girar} title="Girar vídeo" style={{ color: C.textMuted, lineHeight: 1 }}><RotateCw size={13} /></button>
+              {!emTelaCheia && (
+                <button onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setMinimizado(true); }} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>—</button>
+              )}
+              <button onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setAtiva(null); }} style={{ color: C.textMuted, fontSize: 12, lineHeight: 1 }}>✕</button>
             </div>
           </div>
 
-          <div style={{ width: largura, height: altura, position: "relative", background: "#000", overflow: "hidden" }}>
+          <div style={{ width: larguraEfetiva, height: alturaEfetiva, position: "relative", background: "#000", overflow: "hidden" }}>
             <video
               ref={videoRef}
               src={urls[ativa]}
               playsInline
-              onLoadedMetadata={(e) => {
-                const v = e.currentTarget;
-                setVertical(v.videoWidth > 0 && v.videoHeight > v.videoWidth);
+              onLoadedMetadata={() => {
                 setVideoPronto(true);
+                if (autoAvancarRef.current) {
+                  autoAvancarRef.current = false;
+                  videoRef.current?.play().catch(() => {});
+                }
               }}
-              style={
-                vertical
-                  ? {
-                      position: "absolute",
-                      top: "50%",
-                      left: "50%",
-                      width: altura,
-                      height: largura,
-                      transform: "translate(-50%, -50%) rotate(90deg)",
-                      objectFit: "cover",
-                      opacity: videoPronto ? 1 : 0,
-                    }
-                  : { width: "100%", height: "100%", objectFit: "contain", opacity: videoPronto ? 1 : 0 }
-              }
+              onEnded={irParaProximoSegmento}
+              style={estiloVideo}
             />
             {!videoPronto && (
               <div className="absolute inset-0 flex items-center justify-center">
@@ -2990,21 +3178,31 @@ function AssistirVideoInline({ C, evento, scout, periodos }) {
             )}
           </div>
 
-          {videoPronto && <ControlesVideo C={C} videoRef={videoRef} compacto={largura < 240} />}
+          {videoPronto && (
+            <ControlesVideo
+              C={C}
+              videoRef={videoRef}
+              compacto={largura < 240 && !emTelaCheia}
+              emTelaCheia={emTelaCheia}
+              onAlternarTelaCheia={alternarTelaCheia}
+            />
+          )}
 
-          {/* Alça de redimensionar — arraste pra deixar o player maior ou
-              menor (a altura acompanha sozinha, mantendo a horizontal). */}
-          <div
-            onPointerDown={onResizeDown}
-            className="absolute"
-            style={{
-              right: 2, bottom: 2, width: 22, height: 22, cursor: "nwse-resize", touchAction: "none",
-              display: "flex", alignItems: "flex-end", justifyContent: "flex-end", padding: 3,
-            }}
-            aria-label="Redimensionar player"
-          >
-            <div style={{ width: 12, height: 12, borderRight: `2px solid ${C.textFaint}`, borderBottom: `2px solid ${C.textFaint}`, borderRadius: 2 }} />
-          </div>
+          {/* Alça de redimensionar — some em tela cheia, já que o tamanho
+              nesse modo é sempre o da tela inteira. */}
+          {!emTelaCheia && (
+            <div
+              onPointerDown={onResizeDown}
+              className="absolute"
+              style={{
+                right: 2, bottom: 2, width: 22, height: 22, cursor: "nwse-resize", touchAction: "none",
+                display: "flex", alignItems: "flex-end", justifyContent: "flex-end", padding: 3,
+              }}
+              aria-label="Redimensionar player"
+            >
+              <div style={{ width: 12, height: 12, borderRight: `2px solid ${C.textFaint}`, borderBottom: `2px solid ${C.textFaint}`, borderRadius: 2 }} />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -3423,7 +3621,6 @@ function ScoutJogo({ data, update, params, nav }) {
             return d;
           })}
           onTempoAtualizado={(t) => { videoTempoRef.current = t; }}
-          onGravacaoIniciada={() => { if (!scout.cronometro.rodando) iniciarCronometro(); }}
         />
         {Object.keys(scout.videosPorPeriodo || {}).length > 0 && (
           <div className="flex items-center gap-1.5 flex-wrap mb-4" style={{ marginTop: -8 }}>
@@ -4597,6 +4794,11 @@ function RelatorioJogo({ data, update, params, nav, readOnly }) {
                         <div key={l}><p style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.blue }}>{v}</p><p style={{ fontSize: 9, color: C.textMuted }}>{l}</p></div>
                       ))}
                     </div>
+                    {(s.passesCertos + s.passesErrados > 0) && (
+                      <p style={{ color: C.textFaint, fontSize: 10 }} className="mt-1">
+                        Passes: {s.passesCertos}/{s.passesCertos + s.passesErrados} certos ({Math.round((s.passesCertos / (s.passesCertos + s.passesErrados)) * 100)}%)
+                      </p>
+                    )}
                   </Card>
                 );
               })}
