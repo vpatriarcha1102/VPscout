@@ -63,7 +63,7 @@ const storageFirestore = {
     try {
       await setDoc(doc(db, COLLECTION, key), { value, atualizadoEm: Date.now() });
       return { key, value };
-    } catch (e) { return null; }
+    } catch (e) { console.error("Falha ao gravar no Firestore:", e); return null; }
   },
   async delete(key) {
     try { await deleteDoc(doc(db, COLLECTION, key)); return { key, deleted: true }; }
@@ -80,11 +80,22 @@ const storageFirestore = {
     } catch (e) { return { keys: [] }; }
   },
   subscribe(key, cb) {
-    try {
-      return onSnapshot(doc(db, COLLECTION, key), (snap) => {
-        if (snap.exists()) cb(snap.data().value);
-      });
-    } catch (e) { return () => {}; }
+    // Se a conexão em tempo real cair com erro, reassina sozinho depois de 5s.
+    let cancelado = false;
+    let unsub = () => {};
+    let retimer = null;
+    const iniciar = () => {
+      if (cancelado) return;
+      try {
+        unsub = onSnapshot(
+          doc(db, COLLECTION, key),
+          (snap) => { if (snap.exists()) cb(snap.data().value); },
+          () => { try { unsub(); } catch (e) { /* ignore */ } if (!cancelado) retimer = setTimeout(iniciar, 5000); }
+        );
+      } catch (e) { if (!cancelado) retimer = setTimeout(iniciar, 5000); }
+    };
+    iniciar();
+    return () => { cancelado = true; clearTimeout(retimer); try { unsub(); } catch (e) { /* ignore */ } };
   },
 };
 
