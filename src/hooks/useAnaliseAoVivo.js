@@ -57,18 +57,28 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
         });
 
         (async () => {
-          try {
-            const service = getAIAnalysisService();
-            const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
-            await service.iniciarAnalise({ partidaId, videoKey: seg.key, jogadoresCadastrados, coresUniforme: scout.coresUniforme });
-          } catch (e) {
-            update((d) => {
-              const s = d.scouts[evento.id];
-              const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
-              if (alvo) { alvo.analiseStatus = "erro"; alvo.analiseErro = e.message; }
-              return d;
-            });
+          const service = getAIAnalysisService();
+          const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
+          // Tenta até 3 vezes sozinho (falha de rede, aparelho dormindo,
+          // Worker ocupado) antes de marcar erro — sem precisar apertar nada.
+          const esperas = [0, 4000, 15000];
+          let ultimoErro = null;
+          for (let i = 0; i < esperas.length; i++) {
+            if (esperas[i]) await new Promise((r) => setTimeout(r, esperas[i]));
+            try {
+              await service.iniciarAnalise({ partidaId, videoKey: seg.key, jogadoresCadastrados, coresUniforme: scout.coresUniforme });
+              return; // o resultado chega pelo polling (consultarStatus)
+            } catch (e) {
+              ultimoErro = e;
+              if (/token|autoriz|VITE_AI_WORKER_URL/i.test(e?.message || "")) break; // erro de configuração: repetir não adianta
+            }
           }
+          update((d) => {
+            const s = d.scouts[evento.id];
+            const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
+            if (alvo) { alvo.analiseStatus = "erro"; alvo.analiseErro = ultimoErro?.message || "Falha ao iniciar a análise."; }
+            return d;
+          });
         })();
       });
     });
@@ -91,11 +101,11 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
       });
       for (const { periodoNumero, seg } of pendentes) {
         const partidaId = `${evento.id}_p${periodoNumero}_s${seg.indice}`;
-        // Trava de segurança: se ficar "processando" por mais de 5 minutos
-        // (o servidor já desiste sozinho aos 3), marca erro aqui também —
+        // Trava de segurança: se ficar "processando" por mais de 12 minutos
+        // (a análise de um trecho curto leva poucos minutos), marca erro aqui também —
         // evita que a tela fique girando pra sempre se, por algum motivo,
         // a resposta do servidor nunca chegar de volta.
-        if (seg.analiseIniciadaEm && Date.now() - seg.analiseIniciadaEm > 5 * 60 * 1000) {
+        if (seg.analiseIniciadaEm && Date.now() - seg.analiseIniciadaEm > 12 * 60 * 1000) {
           update((d) => {
             const s = d.scouts[evento.id];
             const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
