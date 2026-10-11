@@ -12,6 +12,21 @@ const config = {
 
 export const firebaseConfigurado = Boolean(config.apiKey && config.projectId);
 
+if (!firebaseConfigurado && typeof console !== "undefined") {
+  const faltando = Object.entries({
+    VITE_FIREBASE_API_KEY: config.apiKey,
+    VITE_FIREBASE_AUTH_DOMAIN: config.authDomain,
+    VITE_FIREBASE_PROJECT_ID: config.projectId,
+    VITE_FIREBASE_STORAGE_BUCKET: config.storageBucket,
+    VITE_FIREBASE_MESSAGING_SENDER_ID: config.messagingSenderId,
+    VITE_FIREBASE_APP_ID: config.appId,
+  }).filter(([, v]) => !v).map(([k]) => k);
+  console.error(
+    `[VPScouts] Firebase não configurado — variável(is) de ambiente ausente(s) ou com nome errado no Netlify: ${faltando.join(", ")}. ` +
+    `O app vai funcionar só neste aparelho, sem sincronizar com outros dispositivos, até isso ser corrigido em Site settings → Environment variables.`
+  );
+}
+
 let db = null;
 if (firebaseConfigurado) {
   const app = getApps().length ? getApps()[0] : initializeApp(config);

@@ -31,6 +31,10 @@ export function useVideoRecorder() {
   const [erro, setErro] = useState(null);
   const [videoBlob, setVideoBlob] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
+  // Stream ao vivo da câmera enquanto ela está aberta — usado só pra
+  // preview (o <video> na tela), não pra gravação em si (isso o
+  // MediaRecorder já cuida sozinho, guardado em streamRef).
+  const [stream, setStream] = useState(null);
 
   const streamRef = useRef(null);
   const recorderRef = useRef(null);
@@ -45,6 +49,45 @@ export function useVideoRecorder() {
     }
   };
 
+  const abrirPreview = useCallback(async () => {
+    setErro(null);
+    if (!suportado) {
+      setErro("Gravação nativa não é suportada neste navegador/dispositivo.");
+      setStatus("erro");
+      return;
+    }
+    if (streamRef.current) return; // já tem câmera aberta (preview ou gravação)
+    setStatus("pedindo_permissao");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment",
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          frameRate: { ideal: 30 },
+        },
+        audio: true,
+      });
+      streamRef.current = stream;
+      setStream(stream);
+      setStatus("pre_visualizando");
+    } catch (e) {
+      const negado = e && (e.name === "NotAllowedError" || e.name === "PermissionDeniedError");
+      setErro(negado ? "Permissão de câmera/microfone negada." : "Não foi possível acessar a câmera.");
+      setStatus("erro");
+    }
+  }, [suportado]);
+
+  // Fecha a câmera aberta só pra pré-visualização, sem ter gravado nada.
+  const fecharPreview = useCallback(() => {
+    if (streamRef.current && recorderRef.current == null) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setStream(null);
+      setStatus("parado");
+    }
+  }, []);
+
   const iniciar = useCallback(async () => {
     setErro(null);
     if (!suportado) {
@@ -52,16 +95,44 @@ export function useVideoRecorder() {
       setStatus("erro");
       return;
     }
-    setStatus("pedindo_permissao");
+    // Se a câmera já está aberta (por causa da pré-visualização), reaproveita
+    // o mesmo stream em vez de pedir permissão de novo — evita um segundo
+    // pedido de permissão e mantém o ângulo já ajustado sem reiniciar a câmera.
+    let stream = streamRef.current;
+    if (!stream) {
+      setStatus("pedindo_permissao");
+      try {
+        // Pedimos Full HD (1920x1080) com o celular na horizontal — o
+        // "ideal" faz o navegador usar a melhor resolução disponível na
+        // câmera até esse teto, sem travar em aparelhos mais fracos (que
+        // caem pra um valor menor automaticamente).
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: true,
+        });
+        streamRef.current = stream;
+        setStream(stream);
+      } catch (e) {
+        const negado = e && (e.name === "NotAllowedError" || e.name === "PermissionDeniedError");
+        setErro(negado ? "Permissão de câmera/microfone negada." : "Não foi possível acessar a câmera.");
+        setStatus("erro");
+        return;
+      }
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: true,
-      });
-      streamRef.current = stream;
       chunksRef.current = [];
       const mimeType = escolherMimeType();
-      const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const recorder = new window.MediaRecorder(stream, {
+        ...(mimeType ? { mimeType } : {}),
+        // Bitrate mais alto pra manter nitidez nos lances rápidos
+        // (sem isso o navegador comprime demais e a bola vira um borrão).
+        videoBitsPerSecond: 8_000_000,
+      });
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
@@ -73,12 +144,15 @@ export function useVideoRecorder() {
         pararTimer();
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
+        setStream(null);
       };
       recorder.onerror = () => {
         setErro("A gravação foi interrompida por um erro do navegador.");
         setStatus("erro");
         pararTimer();
         stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        setStream(null);
       };
       recorderRef.current = recorder;
       recorder.start(5000);
@@ -103,6 +177,7 @@ export function useVideoRecorder() {
 
   const reiniciar = useCallback(() => {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
+    recorderRef.current = null;
     setVideoBlob(null);
     setVideoUrl(null);
     setSegundos(0);
@@ -134,6 +209,9 @@ export function useVideoRecorder() {
     erro,
     videoBlob,
     videoUrl,
+    stream,
+    abrirPreview,
+    fecharPreview,
     iniciar,
     parar,
     reiniciar,

@@ -18,10 +18,11 @@ const COLLECTION = "vpscouts_kv";
 /* ---------- Fallback: localStorage (um dispositivo só) ---------- */
 const storageLocal = {
   async get(key) {
-    try {
-      const raw = window.localStorage.getItem(PREFIX_LOCAL + key);
-      return raw === null ? null : { key, value: raw };
-    } catch (e) { return null; }
+    // Propositalmente NÃO engolimos erro aqui (ver storageFirestore.get):
+    // se algo der errado de verdade, quem chama precisa saber, pra nunca
+    // tratar "falhou ao ler" como se fosse "ainda não existe nada".
+    const raw = window.localStorage.getItem(PREFIX_LOCAL + key);
+    return raw === null ? null : { key, value: raw };
   },
   async set(key, value) {
     try { window.localStorage.setItem(PREFIX_LOCAL + key, value); return { key, value }; }
@@ -48,16 +49,21 @@ const storageLocal = {
 /* ---------- Firestore: dados compartilhados entre todos os dispositivos ---------- */
 const storageFirestore = {
   async get(key) {
-    try {
-      const snap = await getDoc(doc(db, COLLECTION, key));
-      return snap.exists() ? { key, value: snap.data().value } : null;
-    } catch (e) { return null; }
+    // IMPORTANTE: não fazemos catch aqui. Se a leitura falhar de verdade
+    // (rede, permissão, projeto errado etc.), isso precisa chegar como
+    // erro até o App — porque um erro de leitura tratado como "documento
+    // vazio" faz o app achar que não existe nada salvo e, pouco depois,
+    // GRAVAR um estado vazio por cima dos dados reais que só não
+    // conseguiram ser lidos naquele momento. Só "documento realmente não
+    // existe" (snap.exists() === false) deve virar null.
+    const snap = await getDoc(doc(db, COLLECTION, key));
+    return snap.exists() ? { key, value: snap.data().value } : null;
   },
   async set(key, value) {
     try {
       await setDoc(doc(db, COLLECTION, key), { value, atualizadoEm: Date.now() });
       return { key, value };
-    } catch (e) { return null; }
+    } catch (e) { console.error("Falha ao gravar no Firestore:", e); return null; }
   },
   async delete(key) {
     try { await deleteDoc(doc(db, COLLECTION, key)); return { key, deleted: true }; }
@@ -74,11 +80,22 @@ const storageFirestore = {
     } catch (e) { return { keys: [] }; }
   },
   subscribe(key, cb) {
-    try {
-      return onSnapshot(doc(db, COLLECTION, key), (snap) => {
-        if (snap.exists()) cb(snap.data().value);
-      });
-    } catch (e) { return () => {}; }
+    // Se a conexão em tempo real cair com erro, reassina sozinho depois de 5s.
+    let cancelado = false;
+    let unsub = () => {};
+    let retimer = null;
+    const iniciar = () => {
+      if (cancelado) return;
+      try {
+        unsub = onSnapshot(
+          doc(db, COLLECTION, key),
+          (snap) => { if (snap.exists()) cb(snap.data().value); },
+          () => { try { unsub(); } catch (e) { /* ignore */ } if (!cancelado) retimer = setTimeout(iniciar, 5000); }
+        );
+      } catch (e) { if (!cancelado) retimer = setTimeout(iniciar, 5000); }
+    };
+    iniciar();
+    return () => { cancelado = true; clearTimeout(retimer); try { unsub(); } catch (e) { /* ignore */ } };
   },
 };
 

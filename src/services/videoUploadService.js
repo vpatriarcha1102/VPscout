@@ -19,7 +19,18 @@ import * as videoStore from "../lib/videoStore";
 import { headersComToken } from "../lib/apiToken";
 
 const PART_SIZE = 8 * 1024 * 1024; // 8MB — acima do mínimo de 5MB exigido pelo R2/S3 multipart
-const MAX_TENTATIVAS_POR_PARTE = 4;
+// 6 tentativas (era 4) com backoff um pouco maior (com teto) — o wifi de
+// ginásio costuna ter quedas curtas e passageiras durante o jogo; com
+// poucas tentativas, uma dessas quedas já bastava pra jogar o trecho pra
+// "erro" definitivo, obrigando a reenviar na mão depois pela tela de
+// Backup em vez de só se recuperar sozinho na hora.
+const MAX_TENTATIVAS_POR_PARTE = 6;
+// Quantas partes sobem ao mesmo tempo. Antes era 1 (sequencial) — numa
+// rede boa (wifi/5G) isso deixava banda disponível sem uso, já que cada
+// parte esperava a anterior terminar pra só então começar. 3 em paralelo
+// aproveita bem melhor a conexão sem virar uma enxurrada de conexões (o
+// R2 aguenta numa boa).
+const PARTES_EM_PARALELO = 3;
 
 async function postJSON(path, body) {
   const res = await fetch(path, {
@@ -81,15 +92,53 @@ async function enviarParte({ registro, parteInfo, blob }) {
     } catch (e) {
       if (e.offline) throw e;
       ultimoErro = e;
-      await espera(500 * tentativa);
+      await espera(Math.min(500 * tentativa, 4000));
     }
   }
   throw ultimoErro || new Error(`Não foi possível enviar a parte ${parteInfo.partNumber}.`);
 }
 
+// Sobe as partes restantes em paralelo (até PARTES_EM_PARALELO por vez) em
+// vez de uma de cada vez. Cada parte confirmada é salva no IndexedDB na
+// hora (igual antes), então mesmo interrompendo no meio, o progresso já
+// feito não se perde — só continua de onde parou.
+async function enviarPartesEmParalelo({ registro, restantes, totalPartes, onProgresso }) {
+  let cursor = 0;
+  let erroFatal = null;
+  let ficouOffline = false;
+
+  const worker = async () => {
+    while (true) {
+      if (erroFatal || ficouOffline) return;
+      const minhaVez = cursor++;
+      if (minhaVez >= restantes.length) return;
+      const parteInfo = restantes[minhaVez];
+      if (offline()) { ficouOffline = true; return; }
+      try {
+        const etag = await enviarParte({ registro, parteInfo, blob: registro.blob });
+        if (erroFatal || ficouOffline) return; // outra parte já falhou enquanto essa subia — não conta mais
+        registro.partesEnviadas = [...(registro.partesEnviadas || []), { partNumber: parteInfo.partNumber, etag }];
+        await videoStore.salvarRegistro(registro);
+        const percent = Math.round((registro.partesEnviadas.length / totalPartes) * 100);
+        onProgresso?.(percent);
+      } catch (e) {
+        if (e?.offline) { ficouOffline = true; return; }
+        erroFatal = e;
+        return;
+      }
+    }
+  };
+
+  const numWorkers = Math.max(1, Math.min(PARTES_EM_PARALELO, restantes.length));
+  await Promise.all(Array.from({ length: numWorkers }, () => worker()));
+
+  if (ficouOffline) return { offline: true };
+  if (erroFatal) throw erroFatal;
+  return { offline: false };
+}
+
 async function processar(registro, callbacks = {}) {
   const { onStatus, onProgresso, onErro, onConcluido } = callbacks;
-  const blob = registro.blob;
 
   try {
     if (offline()) {
@@ -117,19 +166,20 @@ async function processar(registro, callbacks = {}) {
     const jaEnviadas = new Set((registro.partesEnviadas || []).map((p) => p.partNumber));
     const restantes = todasPartes.filter((p) => !jaEnviadas.has(p.partNumber));
 
-    for (const parteInfo of restantes) {
-      if (offline()) {
-        registro.status = "aguardando_conexao";
-        await videoStore.salvarRegistro(registro);
-        onStatus?.("aguardando_conexao");
-        aguardarConexaoERetomar(registro.partidaId, callbacks);
-        return;
-      }
-      const etag = await enviarParte({ registro, parteInfo, blob });
-      registro.partesEnviadas = [...(registro.partesEnviadas || []), { partNumber: parteInfo.partNumber, etag }];
+    if (offline()) {
+      registro.status = "aguardando_conexao";
       await videoStore.salvarRegistro(registro);
-      const percent = Math.round((registro.partesEnviadas.length / todasPartes.length) * 100);
-      onProgresso?.(percent);
+      onStatus?.("aguardando_conexao");
+      aguardarConexaoERetomar(registro.partidaId, callbacks);
+      return;
+    }
+    const resultadoPartes = await enviarPartesEmParalelo({ registro, restantes, totalPartes: todasPartes.length, onProgresso });
+    if (resultadoPartes.offline) {
+      registro.status = "aguardando_conexao";
+      await videoStore.salvarRegistro(registro);
+      onStatus?.("aguardando_conexao");
+      aguardarConexaoERetomar(registro.partidaId, callbacks);
+      return;
     }
 
     await postJSON("/.netlify/functions/upload-complete", {

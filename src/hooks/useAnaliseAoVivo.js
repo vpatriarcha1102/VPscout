@@ -37,6 +37,13 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
       const periodoNumero = Number(periodoStr);
       (v.segmentos || []).forEach((seg) => {
         const chave = `p${periodoNumero}-s${seg.indice}`;
+        // Se o status não é "processando" nem "concluido" (por exemplo,
+        // foi resetado pra "idle" pelo botão "Tentar analisar de novo"),
+        // esquece que essa chave já tinha sido iniciada antes — senão o
+        // retry nunca dispararia de novo.
+        if (seg.analiseStatus !== "processando" && seg.analiseStatus !== "concluido") {
+          iniciadosRef.current.delete(chave);
+        }
         if (!seg.key || seg.analiseStatus === "processando" || seg.analiseStatus === "concluido") return;
         if (iniciadosRef.current.has(chave)) return;
         iniciadosRef.current.add(chave);
@@ -45,23 +52,33 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
         update((d) => {
           const s = d.scouts[evento.id];
           const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
-          if (alvo) { alvo.analiseStatus = "processando"; alvo.analiseErro = null; }
+          if (alvo) { alvo.analiseStatus = "processando"; alvo.analiseErro = null; alvo.analiseIniciadaEm = Date.now(); }
           return d;
         });
 
         (async () => {
-          try {
-            const service = getAIAnalysisService();
-            const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
-            await service.iniciarAnalise({ partidaId, videoKey: seg.key, jogadoresCadastrados, coresUniforme: scout.coresUniforme });
-          } catch (e) {
-            update((d) => {
-              const s = d.scouts[evento.id];
-              const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
-              if (alvo) { alvo.analiseStatus = "erro"; alvo.analiseErro = e.message; }
-              return d;
-            });
+          const service = getAIAnalysisService();
+          const jogadoresCadastrados = atletas.map((a) => ({ numero: a.numero, nome: a.nome, posicao: a.posicao }));
+          // Tenta até 3 vezes sozinho (falha de rede, aparelho dormindo,
+          // Worker ocupado) antes de marcar erro — sem precisar apertar nada.
+          const esperas = [0, 4000, 15000];
+          let ultimoErro = null;
+          for (let i = 0; i < esperas.length; i++) {
+            if (esperas[i]) await new Promise((r) => setTimeout(r, esperas[i]));
+            try {
+              await service.iniciarAnalise({ partidaId, videoKey: seg.key, jogadoresCadastrados, coresUniforme: scout.coresUniforme });
+              return; // o resultado chega pelo polling (consultarStatus)
+            } catch (e) {
+              ultimoErro = e;
+              if (/token|autoriz|VITE_AI_WORKER_URL/i.test(e?.message || "")) break; // erro de configuração: repetir não adianta
+            }
           }
+          update((d) => {
+            const s = d.scouts[evento.id];
+            const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
+            if (alvo) { alvo.analiseStatus = "erro"; alvo.analiseErro = ultimoErro?.message || "Falha ao iniciar a análise."; }
+            return d;
+          });
         })();
       });
     });
@@ -74,7 +91,7 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
     const temPendente = Object.values(videosPorPeriodo).some((v) => (v.segmentos || []).some((s) => s.analiseStatus === "processando"));
     if (!temPendente) return undefined;
 
-    const id = setInterval(async () => {
+    const verificarPendentes = async () => {
       const service = getAIAnalysisService();
       const pendentes = [];
       Object.entries(videosPorPeriodo).forEach(([periodoStr, v]) => {
@@ -84,6 +101,19 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
       });
       for (const { periodoNumero, seg } of pendentes) {
         const partidaId = `${evento.id}_p${periodoNumero}_s${seg.indice}`;
+        // Trava de segurança: se ficar "processando" por mais de 12 minutos
+        // (a análise de um trecho curto leva poucos minutos), marca erro aqui também —
+        // evita que a tela fique girando pra sempre se, por algum motivo,
+        // a resposta do servidor nunca chegar de volta.
+        if (seg.analiseIniciadaEm && Date.now() - seg.analiseIniciadaEm > 12 * 60 * 1000) {
+          update((d) => {
+            const s = d.scouts[evento.id];
+            const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
+            if (alvo) { alvo.analiseStatus = "erro"; alvo.analiseErro = "A análise demorou demais e foi cancelada. Tente regravar esse trecho."; }
+            return d;
+          });
+          continue;
+        }
         try {
           const st = await service.consultarStatus(partidaId);
           if (st.status === "concluido") {
@@ -93,7 +123,7 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
               const alvo = (s.videosPorPeriodo[periodoNumero]?.segmentos || []).find((x) => x.indice === seg.indice);
               if (alvo) { alvo.analiseStatus = "concluido"; alvo.analiseAtualizadaEm = Date.now(); }
               // Auto-aplica os confiáveis direto nas estatísticas...
-              aplicarEventosConfirmados(s, itens, uid);
+              aplicarEventosConfirmados(s, itens, uid, atletas);
               // ...e guarda o resto (incerto) pra revisão manual no fim.
               const pendentesRestantes = itens.filter((it) => !it.confirmado);
               s.itensRevisaoPendentes = [...(s.itensRevisaoPendentes || []), ...pendentesRestantes];
@@ -109,9 +139,13 @@ export function useAnaliseAoVivo({ evento, scout, atletas, update, uid }) {
           }
         } catch (e) { /* tenta de novo no próximo tick */ }
       }
-    }, 6000);
+    };
 
-    return () => clearInterval(id);
+    const id = setInterval(verificarPendentes, 6000);
+    // Assim que a conexão voltar, verifica na hora — sem isso, dependendo
+    // do momento, dava pra esperar até 6s à toa mesmo já tendo internet.
+    window.addEventListener("online", verificarPendentes);
+    return () => { clearInterval(id); window.removeEventListener("online", verificarPendentes); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assinatura]);
 }

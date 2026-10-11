@@ -47,6 +47,19 @@ export async function lerRegistro(partidaId) {
   });
 }
 
+// Lista TODOS os registros guardados localmente — usado pela recuperação
+// de emergência: mesmo que o app tenha sido fechado/recarregado e a tela
+// não lembre mais quais trechos ficaram pendentes, o IndexedDB lembra.
+export async function listarTodosRegistros() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
 export async function removerRegistro(partidaId) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
