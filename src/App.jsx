@@ -130,43 +130,38 @@ function resizeImageToDataURL(file, maxDim = 240) {
   });
 }
 
-// "Está escuro lá fora" — janela horária usada só pra escolher QUAL EMOJI
-// mostrar (🌙 ☁️ ⛈️), independente do texto da saudação. Vai das 18h até
-// as 04h59 (a partir das 05h já considera "dia" pra fins de emoji, mesmo
-// que o texto da saudação nessa hora ainda seja "Bom dia").
-function ehNoiteParaEmoji(h) {
-  return h >= 18 || h < 5;
+// Emoji da saudação por faixa de horário + clima real (chuva ou não).
+// Cada faixa tem 2 emojis: o primeiro é pra tempo sem chuva, o segundo pra
+// quando está chovendo (ou garoando / com pancadas / tempestade):
+//   18h01 às 05h00 → 🌙 ou 🌧️
+//   05h01 às 08h00 → 🌤️ ou 🌦️
+//   08h01 às 12h00 → ☀️ ou 🌧️
+//   12h01 às 18h00 → ⛅️ ou 🌦️
+function emojiPorFaixaEClima(chuva, agora = new Date()) {
+  const m = agora.getHours() * 60 + agora.getMinutes(); // minutos desde 00h00
+  if (m > 5 * 60 && m <= 8 * 60) return chuva ? "🌦️" : "🌤️";
+  if (m > 8 * 60 && m <= 12 * 60) return chuva ? "🌧️" : "☀️";
+  if (m > 12 * 60 && m <= 18 * 60) return chuva ? "🌦️" : "⛅️";
+  return chuva ? "🌧️" : "🌙"; // 18h01 às 05h00
 }
 
-function getSaudacao(nome, emojiClima) {
+// `chuva` vem do hook de clima: true/false quando já se sabe o clima real,
+// null enquanto não carregou (ou sem localização) — nesse caso a saudação
+// fica sem emoji, pra não mostrar um e trocar por outro logo depois.
+function getSaudacao(nome, chuva) {
   const h = new Date().getHours();
-  // Sem "chute" por horário enquanto o clima real não carrega: mostrar um
-  // emoji e trocar por outro alguns milissegundos depois (ex: ☀️ virando
-  // ❄️) dava a impressão de bug. Agora só aparece emoji quando já é o
-  // clima de verdade — antes disso, a saudação fica sem emoji mesmo.
-  const emoji = emojiClima || "";
+  const emoji = chuva == null ? "" : emojiPorFaixaEClima(chuva);
   const espaco = emoji ? ` ${emoji}` : "";
   if (h < 12) return `Bom dia, ${nome}${espaco}`;
   if (h < 18) return `Boa tarde, ${nome}${espaco}`;
   return `Boa noite, ${nome}${espaco}`;
 }
 
-// Traduz o código de clima da Open-Meteo (padrão internacional WMO) num
-// emoji. Retorna null pra qualquer situação que a gente não soube
-// traduzir — nesse caso getSaudacao() cai no emoji padrão por horário.
-//
-// Conjunto FECHADO de emojis, sempre a partir do clima real — só estes 5:
-// ☀️ céu limpo de dia, 🌙 céu limpo de noite, ⛅️ qualquer nublado/chuva
-// fraca (de dia ou de noite, não tem versão separada pra noite), ⛈️
-// tempestade, ❄️ frio (temperatura abaixo de 18°, tem prioridade sobre
-// ☀️/⛅️/🌙, mas não sobre ⛈️).
-function emojiPorCodigoClima(codigo, tempC, ehNoite) {
+// Códigos de clima da Open-Meteo (padrão WMO) que contam como "chuva":
+// garoa (51–57), chuva (61–67), pancadas (80–82) e tempestade (95–99).
+function codigoEhChuva(codigo) {
   if (codigo == null) return null;
-
-  if (codigo >= 95) return "⛈️"; // tempestade — sempre, de dia ou de noite
-  if (tempC != null && tempC < 18) return "❄️"; // frio — sempre que a temperatura estiver abaixo de 18°
-  if (ehNoite) return codigo === 0 || codigo === 1 ? "🌙" : "⛅️"; // céu limpo à noite vs qualquer outra coisa
-  return codigo === 0 || codigo === 1 ? "☀️" : "⛅️"; // céu limpo de dia vs qualquer outra coisa
+  return (codigo >= 51 && codigo <= 67) || (codigo >= 80 && codigo <= 82) || codigo >= 95;
 }
 
 // Pede a localização (se a pessoa liberar) e busca o clima atual na
@@ -175,21 +170,19 @@ function emojiPorCodigoClima(codigo, tempC, ehNoite) {
 // pessoa negar, ou a busca falhar por qualquer motivo, simplesmente não
 // atualiza nada — a saudação fica sem emoji (getSaudacao trata isso).
 function useEmojiClima() {
-  const [emoji, setEmoji] = useState(null);
+  const [chuva, setChuva] = useState(null);
 
   useEffect(() => {
     if (!("geolocation" in navigator)) return;
 
     // Evita pedir localização/buscar de novo toda vez que a pessoa abre
-    // o app — reaproveita por 30 minutos dentro da mesma sessão.
-    // Importante: o cache guarda também se foi calculado de dia ou de
-    // noite, pra não ficar com um emoji de noite "preso" na tela depois
-    // que já amanheceu (e vice-versa) só porque ainda está dentro da
-    // janela de 30 minutos.
+    // o app — reaproveita por 30 minutos. O cache guarda só se está
+    // chovendo; o emoji em si é calculado pelo horário na hora de mostrar,
+    // então nunca fica um emoji de outra faixa "preso" na tela.
     try {
-      const emCache = JSON.parse(window.localStorage.getItem("vps_clima_cache") || "null");
-      if (emCache && Date.now() - emCache.ts < 30 * 60 * 1000 && emCache.noite === ehNoiteParaEmoji(new Date().getHours())) {
-        setEmoji(emCache.emoji);
+      const emCache = JSON.parse(window.localStorage.getItem("vps_clima_cache2") || "null");
+      if (emCache && typeof emCache.chuva === "boolean" && Date.now() - emCache.ts < 30 * 60 * 1000) {
+        setChuva(emCache.chuva);
         return;
       }
     } catch { /* ignora cache corrompido */ }
@@ -199,30 +192,26 @@ function useEmojiClima() {
       async (pos) => {
         try {
           const { latitude, longitude } = pos.coords;
-          const resp = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code,is_day`);
+          const resp = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=weather_code,precipitation`);
           if (!resp.ok) return;
           const j = await resp.json();
           const cur = j.current || {};
-          // is_day vem calculado pela própria Open-Meteo com o nascer/pôr
-          // do sol REAL de onde a pessoa está (varia com estação e
-          // latitude) — mais preciso que um horário fixo de relógio tipo
-          // "depois das 18h é noite", que erra bastante dependendo da
-          // época do ano.
-          const noiteAgora = cur.is_day != null ? cur.is_day === 0 : ehNoiteParaEmoji(new Date().getHours());
-          const calculado = emojiPorCodigoClima(cur.weather_code, cur.temperature_2m, noiteAgora);
-          if (!cancelado && calculado) {
-            setEmoji(calculado);
-            try { window.localStorage.setItem("vps_clima_cache", JSON.stringify({ emoji: calculado, noite: noiteAgora, ts: Date.now() })); } catch { /* ignora */ }
+          let ehChuva = codigoEhChuva(cur.weather_code);
+          if (ehChuva == null) return;
+          if (!ehChuva && cur.precipitation > 0) ehChuva = true;
+          if (!cancelado) {
+            setChuva(ehChuva);
+            try { window.localStorage.setItem("vps_clima_cache2", JSON.stringify({ chuva: ehChuva, ts: Date.now() })); } catch { /* ignora */ }
           }
-        } catch { /* sem internet, API fora do ar etc. — fica no emoji padrão */ }
+        } catch { /* sem internet, API fora do ar etc. — fica sem emoji */ }
       },
-      () => { /* localização negada/indisponível — fica no emoji padrão */ },
+      () => { /* localização negada/indisponível — fica sem emoji */ },
       { timeout: 5000, maximumAge: 30 * 60 * 1000 }
     );
     return () => { cancelado = true; };
   }, []);
 
-  return emoji;
+  return chuva;
 }
 
 // Mapa com a rota embutido direto na tela do jogo — 100% gratuito, sem
@@ -1754,7 +1743,7 @@ export default function App() {
 function Dashboard({ data, nav, meuAtletaId }) {
   const [, tick] = useState(0);
   useEffect(() => { const id = setInterval(() => tick((t) => t + 1), 60000); return () => clearInterval(id); }, []);
-  const emojiClima = useEmojiClima();
+  const chuva = useEmojiClima();
 
   const proximos = data.eventos.filter((e) => e.tipo === "jogo" && e.status !== "finalizado").sort((a, b) => new Date(a.data + "T" + (a.horario || "00:00")) - new Date(b.data + "T" + (b.horario || "00:00")));
   const ultimos = data.eventos.filter((e) => e.tipo === "jogo" && e.status === "finalizado").sort((a, b) => new Date(b.data + "T" + (b.horario || "00:00")) - new Date(a.data + "T" + (a.horario || "00:00")));
@@ -1774,7 +1763,7 @@ function Dashboard({ data, nav, meuAtletaId }) {
 
   return (
     <div>
-      <ScreenHeader title={getSaudacao(meuAtleta ? meuAtleta.nome : "Victor", emojiClima)} subtitle="Visão geral da temporada" />
+      <ScreenHeader title={getSaudacao(meuAtleta ? meuAtleta.nome : "Victor", chuva)} subtitle="Visão geral da temporada" />
       <div className="px-5">
         <div className="grid grid-cols-3 gap-2 mt-2">
           {meuAtletaId ? (
